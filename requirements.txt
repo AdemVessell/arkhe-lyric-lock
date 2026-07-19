@@ -1,0 +1,11 @@
+# Core runtime. Install ffmpeg separately (brew install ffmpeg).
+torch>=2.1
+torchaudio>=2.1          # provides pipelines.MMS_FA + functional.forced_align
+openai-whisper>=20231117
+numpy>=1.24
+
+# Vocal separation — install in its own venv, the CLI shells out to it:
+#   python3 -m venv ~/.venvs/lyric-lock && ~/.venvs/lyric-lock/bin/pip install demucs==4.0.1
+
+# Optional, legacy A/B spine only:
+# stable-ts==2.19.1

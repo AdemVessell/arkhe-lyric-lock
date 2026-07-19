@@ -1,0 +1,19 @@
+# runs, audio, and anything with a master in it
+out/
+work/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.mp4
+*.mov
+
+# private material
+fixtures/
+lyrics/
+*_gold*.json
+
+__pycache__/
+*.pyc
+.DS_Store
+.venv/

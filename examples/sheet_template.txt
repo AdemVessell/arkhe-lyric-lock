@@ -1,0 +1,17 @@
+# Lyric sheet format
+#
+# - one line per sung line, in the order they are sung
+# - lines starting with # are ignored
+# - [Section] headers are ignored
+# - (parenthetical) tokens are treated as backing vocals and abstain from display
+# - write what is ACTUALLY sung, including repeats — the gate will tell you
+#   (quoting what it heard) if a sung region has no matching lyrics
+
+[Verse 1]
+first line as sung
+second line as sung
+
+[Chorus]
+chorus line one
+chorus line two
+(oh-oh)
