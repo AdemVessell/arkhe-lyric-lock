@@ -49,6 +49,10 @@ only ever review what the machine doubts.
 | **move a word** | drag its block in the lane |
 | **top and tail** | drag a block's left/right edge handle. Edges snap to detected onsets within 100 ms — hold shift to place freely |
 | drag on waveform | select a region (or click a chip; shift-click for a range) |
+| **chunk move** | select several words, then drag inside the selection — the whole group moves together, keeping lengths and gaps |
+| **add a word** | `A` (or the + word button) inserts at the playhead; double-click empty timeline also adds there |
+| **delete** | `⌫` removes the selected words |
+| **rename** | double-click a word chip or its block |
 | **capture** <kbd>C</kbd> | hold <kbd>space</kbd> through each word as you hear it — taps snap to the nearest detected onset, so rough timing is fine |
 | nudge ±20 / ±100ms | shift selected words |
 | ripple: on | a nudge also shifts everything after it (fixes "the rest of the verse is late") |

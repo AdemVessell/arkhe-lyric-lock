@@ -78,6 +78,8 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padd
     <button id="ripple">ripple: off</button>
     <button id="snapAll">snap starts to onsets</button>
     <button id="nextFlag">next flag <kbd>F</kbd></button>
+    <button id="addWord">+ word <kbd>A</kbd></button>
+    <button id="delWord">delete <kbd>⌫</kbd></button>
     <button id="clearSel">clear selection</button>
     <span class="pill" id="selInfo">no selection</span>
   </div>
@@ -290,6 +292,7 @@ function renderWords(){
     const s=document.createElement('span');
     s.className='w '+cls(w)+(selIdx.includes(i)?' sel':'')+(capturing&&capQ[capI]===i?' now':capturing&&capQ.includes(i)?' queued':'');
     s.textContent=w.text; s.title=`${w.start.toFixed(2)}–${w.end.toFixed(2)}s${w.judge_v0!=null?' · judge '+(+w.judge_v0).toFixed(2):''}`;
+    s.ondblclick=ev=>{ev.stopPropagation(); renameWord(i);};
     s.onclick=ev=>{ if(ev.shiftKey&&selIdx.length){const a=Math.min(selIdx[0],i),b=Math.max(selIdx[0],i);selIdx=[];for(let k=a;k<=b;k++)selIdx.push(k)}
       else selIdx=[i];
       selA=words[Math.min(...selIdx)].start; selB=words[Math.max(...selIdx)].end;
@@ -327,7 +330,19 @@ cv.onmousedown=e=>{
   if(e.altKey || e.button===1){ drag={mode:'pan', x0:x, viewA:vA()}; return; }
   if(y>=LANE_Y-6 && y<=LANE_Y+LANE_H+6 && words.length){
     const h=hitWord(x,t);
+    // inside an existing multi-word selection -> move the whole chunk together
+    if(h && selIdx.length>1 && selIdx.includes(h.i) && h.mode==='move'){
+      snapshot();
+      drag={mode:'moveGroup', idxs:[...selIdx], t0:t,
+            starts:selIdx.map(k=>words[k].start), ends:selIdx.map(k=>words[k].end)};
+      return;
+    }
     if(h){ snapshot();
+      if(e.shiftKey && selIdx.length){            // shift-click extends the chunk
+        const a=Math.min(selIdx[0],h.i), b=Math.max(selIdx[0],h.i);
+        selIdx=[]; for(let k=a;k<=b;k++) selIdx.push(k);
+        selA=words[a].start; selB=words[b].end; syncSel(); drag=null; return;
+      }
       drag={mode:h.mode, i:h.i, t0:t, s0:words[h.i].start, e0:words[h.i].end};
       selIdx=[h.i]; selA=words[h.i].start; selB=words[h.i].end; syncSel(); return; }
   }
@@ -342,6 +357,19 @@ cv.onmousemove=e=>{
   }
   if(drag.mode==='pan'){ setView(drag.viewA-(x-drag.x0)/cvw()*vSpan(), drag.viewA-(x-drag.x0)/cvw()*vSpan()+vSpan()); return; }
   if(drag.mode==='sel'){ selB=t; draw(); return; }
+  if(drag.mode==='moveGroup'){
+    let d=t-drag.t0;
+    const firstStart=Math.min(...drag.starts);
+    if(firstStart+d<0) d=-firstStart;
+    drag.idxs.forEach((k,j)=>{ const len=drag.ends[j]-drag.starts[j];
+      words[k].start=+(drag.starts[j]+d).toFixed(3);
+      words[k].end=+(words[k].start+len).toFixed(3);
+      words[k].duration_s=+len.toFixed(3); });
+    selA=Math.min(...drag.idxs.map(k=>words[k].start));
+    selB=Math.max(...drag.idxs.map(k=>words[k].end));
+    $('#selInfo').textContent=`${drag.idxs.length} words moved ${d>=0?'+':''}${Math.round(d*1000)}ms`;
+    draw(); return;
+  }
   const w=words[drag.i], d=t-drag.t0, snap=!e.shiftKey;
   const fix=v=> snap&&nov ? (Math.abs(onsetNear(v,0.10)-v)<0.10 ? onsetNear(v,0.10) : v) : v;
   if(drag.mode==='move'){ const len=drag.e0-drag.s0;
@@ -357,8 +385,15 @@ addEventListener('mouseup',()=>{
   if(!drag)return;
   const m=drag.mode; drag=null;
   if(m==='sel'){ if(Math.abs(selB-selA)<0.02){seek(selA);selA=selB=null;selIdx=[]} else {selIdx=[];syncSel()} draw(); }
-  else if(m==='move'||m==='trimL'||m==='trimR'){ status('edited — ⌘Z to undo'); renderWords(); draw(); }
+  else if(m==='move'||m==='trimL'||m==='trimR'||m==='moveGroup'){
+    autosave(); status('edited — ⌘Z to undo · autosaved'); renderWords(); draw(); }
 });
+cv.ondblclick=e=>{
+  const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
+  if(y<LANE_Y-6||y>LANE_Y+LANE_H+6) return;
+  const h=hitWord(x, x2t(x));
+  if(h) renameWord(h.i); else addWordAt(x2t(x));
+};
 cv.addEventListener('wheel', e=>{
   if(!buf)return; e.preventDefault();
   const r=cv.getBoundingClientRect(), t=x2t(e.clientX-r.left);
@@ -380,6 +415,56 @@ $('#play').onclick=()=>{A=A||new AudioContext(); playing?stop():start()};
 $('#rate').oninput=e=>{rate=+e.target.value;$('#rateOut').textContent=rate+'×';if(playing){stop();start()}};
 $('#lat').oninput=e=>$('#latOut').textContent=e.target.value+'ms';
 
+const AUTOKEY='lyriclock.autosave.v1';
+function autosave(){
+  try{ localStorage.setItem(AUTOKEY, JSON.stringify({
+    t:Date.now(), n:words.length,
+    words:words.map(w=>({text:w.text,start:w.start,end:w.end,
+                         judge_v0:w.judge_v0??null,line_id:w.line_id??null,source:w.source||''}))
+  })); }catch(e){}
+}
+function restoreOffer(){
+  try{
+    const raw=localStorage.getItem(AUTOKEY); if(!raw)return;
+    const d=JSON.parse(raw);
+    if(!d.words||!d.words.length)return;
+    if(words.length && d.n!==words.length)return;      // different song/run
+    const age=Math.round((Date.now()-d.t)/60000);
+    const b=document.createElement('button');
+    b.textContent=`restore autosave (${d.n} words, ${age}m ago)`;
+    b.style.cssText='margin-left:10px;border-color:#AFA9EC;color:#AFA9EC';
+    b.onclick=()=>{ snapshot(); words=d.words.map((w,i)=>({...w,_i:i}));
+      calibrateJudge(); renderWords(); draw(); status('autosave restored'); b.remove(); };
+    document.getElementById('status').appendChild(b);
+  }catch(e){}
+}
+function addWordAt(t, text){
+  if(text==null) text=prompt('new word text','');
+  if(text==null) return;
+  text=String(text).trim(); if(!text) return;
+  snapshot();
+  const w={text, start:+(+t).toFixed(3), end:+(+t+0.40).toFixed(3), duration_s:0.4,
+           source:'manual_add', judge_v0:null,
+           line_id:(words.find(x=>x.start>=t)||words[words.length-1]||{}).line_id ?? null};
+  let i=words.findIndex(x=>x.start>t); if(i<0)i=words.length;
+  words.splice(i,0,w); words.forEach((x,k)=>x._i=k);
+  selIdx=[i]; selA=w.start; selB=w.end;
+  autosave(); syncSel(); status(`added "${text}" at ${w.start.toFixed(2)}s — drag its edges to fit`);
+}
+function deleteSelected(){
+  if(!selIdx.length){status('nothing selected');return}
+  snapshot();
+  const gone=selIdx.map(i=>words[i].text).join(' ');
+  const s2=new Set(selIdx);
+  words=words.filter((_,i)=>!s2.has(i)); words.forEach((x,k)=>x._i=k);
+  selIdx=[]; selA=selB=null; autosave(); syncSel();
+  status(`deleted "${gone}" — ⌘Z to undo`);
+}
+function renameWord(i){
+  const t=prompt('word text', words[i].text); if(t==null)return;
+  const v=String(t).trim(); if(!v)return;
+  snapshot(); words[i].text=v; autosave(); syncSel(); status(`renamed to "${v}"`);
+}
 function snapshot(){undoStack.push(JSON.stringify(words.map(w=>({s:w.start,e:w.end,t:w.text}))));if(undoStack.length>60)undoStack.shift()}
 $('#undo').onclick=()=>{const s=undoStack.pop();if(!s)return;const d=JSON.parse(s);
   words=d.map((x,i)=>({...(words[i]||{}),start:x.s,end:x.e,text:x.t,_i:i}));syncSel();status('undone')};
@@ -388,13 +473,15 @@ function shift(idxs,dt){snapshot();
   if(rippleOn){const from=Math.min(...idxs);for(let i=from;i<words.length;i++){words[i].start+=dt;words[i].end+=dt}}
   else idxs.forEach(i=>{words[i].start+=dt;words[i].end+=dt});
   words.forEach(w=>{w.start=Math.max(0,+w.start.toFixed(3));w.end=Math.max(w.start+.05,+w.end.toFixed(3))});
-  syncSel();status(`${rippleOn?'rippled':'nudged'} ${dt>0?'+':''}${Math.round(dt*1000)}ms`)}
+  syncSel();autosave();status(`${rippleOn?'rippled':'nudged'} ${dt>0?'+':''}${Math.round(dt*1000)}ms`)}
 $('#nudgeL').onclick=()=>selIdx.length&&shift(selIdx,-0.02);
 $('#nudgeR').onclick=()=>selIdx.length&&shift(selIdx,0.02);
 $('#nudgeL2').onclick=()=>selIdx.length&&shift(selIdx,-0.1);
 $('#nudgeR2').onclick=()=>selIdx.length&&shift(selIdx,0.1);
 $('#ripple').onclick=e=>{rippleOn=!rippleOn;e.target.textContent='ripple: '+(rippleOn?'on':'off');e.target.classList.toggle('on',rippleOn)};
 $('#clearSel').onclick=()=>{selIdx=[];selA=selB=null;syncSel()};
+$('#addWord').onclick=()=>addWordAt(now());
+$('#delWord').onclick=deleteSelected;
 function nextFlag(){
   const stops=[...flagged().map(i=>({t:words[i].start,i})),
                ...gateSpans.filter(g=>g.act!=='AUTO_RECOVERABLE').map(g=>({t:g.a,g}))]
@@ -411,7 +498,7 @@ function nextFlag(){
 $('#nextFlag').onclick=nextFlag;
 $('#snapAll').onclick=()=>{if(!nov||!selIdx.length)return;snapshot();let n=0;
   selIdx.forEach(i=>{const s=onsetNear(words[i].start,0.45);if(Math.abs(s-words[i].start)>0.005){const d=words[i].end-words[i].start;words[i].start=+s.toFixed(3);words[i].end=+(s+d).toFixed(3);n++}});
-  syncSel();status(`snapped ${n} starts to onsets`)};
+  syncSel();autosave();status(`snapped ${n} starts to onsets`)};
 
 $('#applyLyr').onclick=()=>{
   if(!selIdx.length)return; const toks=$('#lyr').value.trim().split(/\s+/).filter(Boolean); if(!toks.length)return;
@@ -439,6 +526,8 @@ addEventListener('keydown',e=>{
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z'){e.preventDefault();$('#undo').click();return}
   if(e.key==='c'||e.key==='C'){e.preventDefault();toggleCap();return}
   if(e.key==='f'||e.key==='F'){e.preventDefault();nextFlag();return}
+  if(e.key==='a'||e.key==='A'){e.preventDefault();addWordAt(now());return}
+  if(e.key==='Backspace'||e.key==='Delete'){e.preventDefault();deleteSelected();return}
   if(e.key==='+'||e.key==='='){e.preventDefault();zoomAt(now(),0.6);return}
   if(e.key==='-'||e.key==='_'){e.preventDefault();zoomAt(now(),1.7);return}
   if(e.key==='0'){e.preventDefault();view={a:0,b:0};draw();return}
@@ -455,7 +544,7 @@ addEventListener('keyup',e=>{
   if(snap&&nov){const sn=onsetNear(s); if(Math.abs(sn-s)<0.3)  { en+= (sn-s); s=sn; }}
   const i=capQ[capI]; words[i].start=+s.toFixed(3); words[i].end=+en.toFixed(3);
   words[i].duration_s=+(en-s).toFixed(3); words[i].source='human_capture'; words[i].judge_v0=null;
-  capDown=null; capI++;
+  capDown=null; capI++; autosave();
   if(capI>=capQ.length){capturing=false;$('#capture').classList.remove('on');status(`captured ${capQ.length} words`);stop()}
   else status(`captured "${words[i].text}" → next: "${words[capQ[capI]].text}"`);
   renderWords(); draw();
@@ -463,7 +552,18 @@ addEventListener('keyup',e=>{
 
 function ts(t){const ms=Math.round(t*1000),h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),s=Math.floor(ms%60000/1000),x=ms%1000;
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(x).padStart(3,'0')}`}
-function dl(name,text,type){const b=new Blob([text],{type});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u)}
+function dl(name,text,type){
+  // NOTE: the anchor must be in the document and the object URL must outlive the
+  // click — revoking immediately (as this did) makes Chrome cancel the download
+  // silently, with no error and no file.
+  const b=new Blob([text],{type});
+  const u=URL.createObjectURL(b);
+  const a=document.createElement('a');
+  a.href=u; a.download=name; a.style.display='none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{ a.remove(); URL.revokeObjectURL(u); }, 4000);
+}
 $('#expJson').onclick=()=>{
   const out={schema:'arkhe.lyric_lock.timed/v0',mode:'A-repaired',
     engine:{name:'repair-bench',note:'human-repaired in lyric-lock repair bench'},
@@ -474,6 +574,7 @@ $('#expSrt').onclick=()=>{
   dl('words_repaired.srt',words.map((w,i)=>`${i+1}\n${ts(w.start)} --> ${ts(w.end)}\n${w.text}\n`).join('\n'),'text/plain');
   status('exported words_repaired.srt')};
 fit();
+setTimeout(restoreOffer,400);
 </script>
 </body>
 </html>
