@@ -23,6 +23,14 @@ input[type=range]{width:110px;vertical-align:middle}
 .sp{flex:1}
 .wrap{padding:12px 14px}
 canvas{display:block;width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel);cursor:crosshair}
+#stage{margin-top:10px;background:#0c0d0f;border:1px solid var(--line);border-radius:8px;
+padding:14px 16px 12px;text-align:center;min-height:132px;display:flex;flex-direction:column;
+justify-content:center;gap:8px}
+#stageWord{font-size:74px;line-height:1.05;font-weight:600;letter-spacing:.5px;color:#f2f0ed;
+min-height:80px;transition:opacity .06s linear}
+#stageWord.idle{opacity:.12;font-size:34px;font-weight:400;letter-spacing:2px}
+#stageLine{font-size:15px;color:var(--tx3);letter-spacing:.4px;min-height:20px}
+#stageLine b{color:var(--tx2);font-weight:500}
 #words{margin-top:10px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;max-height:190px;overflow:auto}
 .w{display:inline-block;margin:2px;padding:3px 8px;border-radius:5px;font-size:13px;border:1px solid transparent;cursor:pointer;white-space:nowrap}
 .w.ok{background:#12251f;color:#8fdcc0;border-color:#1d3b32}
@@ -56,8 +64,12 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padd
 </header>
 
 <div class="wrap">
-  <canvas id="wave" height="150"></canvas>
+  <canvas id="wave" height="210"></canvas>
   <div class="row">
+    <button id="zoomIn">zoom + <kbd>+</kbd></button>
+    <button id="zoomOut">zoom − <kbd>-</kbd></button>
+    <button id="zoomFit">fit <kbd>0</kbd></button>
+    <button id="zoomSel">zoom to selection</button>
     <button id="capture">capture mode <kbd>C</kbd></button>
     <button id="nudgeL">◀ 20ms</button>
     <button id="nudgeR">20ms ▶</button>
@@ -68,6 +80,10 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padd
     <button id="nextFlag">next flag <kbd>F</kbd></button>
     <button id="clearSel">clear selection</button>
     <span class="pill" id="selInfo">no selection</span>
+  </div>
+  <div id="stage">
+    <div id="stageWord">&nbsp;</div>
+    <div id="stageLine"></div>
   </div>
   <div id="words"></div>
   <div class="row">
@@ -98,7 +114,7 @@ let thrBad=-3.3, thrWarn=-2.2, gateSpans=[], flagCursor=-1;
 const cv=$('#wave'), cx=cv.getContext('2d');
 function status(m){$('#status').textContent=m}
 function cvw(){return Math.round(cv.getBoundingClientRect().width)||cv.clientWidth||900}
-function fit(){const w=cvw();cv.width=w*devicePixelRatio;cv.height=150*devicePixelRatio;cx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);draw()}
+function fit(){const w=cvw();cv.width=w*devicePixelRatio;cv.height=210*devicePixelRatio;cx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);draw()}
 addEventListener('resize',fit);
 addEventListener('load',fit);
 if(window.ResizeObserver)new ResizeObserver(()=>fit()).observe(cv);
@@ -158,29 +174,112 @@ function onsetNear(t,win=0.28){
   return bi<0?t:bi*novHop;
 }
 const dur=()=>buf?buf.duration:1;
-const x2t=x=>x/cvw()*dur(), t2x=t=>t/dur()*cvw();
+// ---- view window (zoom / pan) -------------------------------------------
+let view={a:0,b:0};                       // b=0 means "fit whole song"
+function vA(){return view.b>view.a?view.a:0}
+function vB(){return view.b>view.a?view.b:dur()}
+function vSpan(){return Math.max(0.05, vB()-vA())}
+const x2t=x=>vA()+ (x/cvw())*vSpan(), t2x=t=>((t-vA())/vSpan())*cvw();
+function setView(a,b){
+  const D=dur(), span=Math.max(0.25, Math.min(D, b-a));
+  a=Math.max(0, Math.min(D-span, a));
+  view={a:a, b:a+span};
+  if(span>=D-0.01) view={a:0,b:0};
+  draw();
+}
+function zoomAt(t, factor){
+  const span=vSpan()*factor, frac=(t-vA())/vSpan();
+  setView(t-frac*span, t-frac*span+span);
+}
+function followPlayhead(){
+  if(view.b<=view.a) return;                    // fitted: nothing to follow
+  const t=now(), a=vA(), b=vB(), span=b-a;
+  if(t<a+span*0.08 || t>b-span*0.12) setView(t-span*0.35, t-span*0.35+span);
+}
+const LANE_Y=142, LANE_H=48, WAVE_H=132;        // layout constants
 
+function stageAt(t){
+  const el=document.getElementById('stageWord'), ln=document.getElementById('stageLine');
+  if(!el)return;
+  let cur=-1;
+  for(let i=0;i<words.length;i++){ if(words[i].start<=t && t<words[i].end){cur=i;break} }
+  if(cur<0){ el.textContent='(silence)'; el.classList.add('idle'); ln.innerHTML=''; return; }
+  el.classList.remove('idle');
+  el.textContent=words[cur].text;
+  const c=cls(words[cur]);
+  el.style.color = c==='bad' ? '#f09a99' : c==='warn' ? '#f0bd6a' : '#f2f0ed';
+  const lid=words[cur].line_id;
+  const line=words.filter(w=>(w.line_id||null)===(lid||null));
+  ln.innerHTML = (line.length>1 && lid!=null)
+    ? line.map(w=>w===words[cur]?'<b>'+w.text+'</b>':w.text).join(' ')
+    : words.slice(Math.max(0,cur-3),cur).map(w=>w.text).join(' ')
+      +' <b>'+words[cur].text+'</b> '
+      +words.slice(cur+1,cur+4).map(w=>w.text).join(' ');
+}
+
+function wavePeaksForView(W){
+  // recompute envelope for the visible window so zoom stays sharp
+  if(!buf) return null;
+  const ch=buf.getChannelData(0), sr=buf.sampleRate;
+  const s0=Math.max(0,Math.floor(vA()*sr)), s1=Math.min(ch.length,Math.ceil(vB()*sr));
+  const n=Math.max(1,Math.floor((s1-s0)/W)), out=new Float32Array(W);
+  for(let i=0;i<W;i++){let m=0;const a=s0+i*n,b=Math.min(s1,a+n);
+    for(let j=a;j<b;j+=Math.max(1,Math.floor(n/48))){const v=Math.abs(ch[j]);if(v>m)m=v}
+    out[i]=m}
+  return out;
+}
 
 function draw(){
-  if(!cx)return; const W=cvw(),H=150;
+  if(!cx)return; const W=cvw(),H=210;
   cx.clearRect(0,0,W,H); cx.fillStyle='#17191c'; cx.fillRect(0,0,W,H);
-  if(selA!=null&&selB!=null){cx.fillStyle='rgba(55,138,221,.18)';cx.fillRect(t2x(Math.min(selA,selB)),0,Math.abs(t2x(selB)-t2x(selA)),H);}
+  // selection
+  if(selA!=null&&selB!=null){cx.fillStyle='rgba(55,138,221,.16)';
+    cx.fillRect(t2x(Math.min(selA,selB)),0,Math.max(1,Math.abs(t2x(selB)-t2x(selA))),H);}
+  // gate spans
   gateSpans.forEach(g=>{const x=t2x(g.a),w2=Math.max(2,t2x(g.b)-t2x(g.a));
+    if(x>W||x+w2<0)return;
     cx.fillStyle=g.act==='FAIL_LOUD'?'rgba(226,75,74,.20)':g.act==='AUTO_RECOVERABLE'?'rgba(93,202,165,.16)':'rgba(239,159,39,.13)';
-    cx.fillRect(x,0,w2,104);
+    cx.fillRect(x,0,w2,WAVE_H);
     cx.fillStyle=g.act==='FAIL_LOUD'?'#f09a99':g.act==='AUTO_RECOVERABLE'?'#8fdcc0':'#f0bd6a';
     cx.font='10px sans-serif'; if(w2>52)cx.fillText(g.cls.replace(/_/g,' ').toLowerCase(),x+3,12);});
-  if(peaks){cx.strokeStyle='#4a5058';cx.beginPath();
-    for(let i=0;i<peaks.length;i++){const x=i/peaks.length*W,h=peaks[i]*54;cx.moveTo(x,84-h);cx.lineTo(x,84+h)}cx.stroke();}
-  // word blocks
+  // waveform (view-local)
+  const pk=wavePeaksForView(W)||peaks;
+  if(pk){cx.strokeStyle='#4a5058';cx.beginPath();
+    for(let i=0;i<pk.length;i++){const x=i/pk.length*W,h=pk[i]*46;cx.moveTo(x,74-h);cx.lineTo(x,74+h)}cx.stroke();}
+  // onset ticks when zoomed in far enough to matter
+  if(nov && vSpan()<14){cx.strokeStyle='rgba(175,169,236,.55)';cx.beginPath();
+    for(let i=1;i<nov.length-1;i++){const t=i*novHop;
+      if(t<vA()||t>vB())continue;
+      if(nov[i]>0.12&&nov[i]>=nov[i-1]&&nov[i]>=nov[i+1]){const x=t2x(t);cx.moveTo(x,116);cx.lineTo(x,130)}}
+    cx.stroke();}
+  // lane separator
+  cx.strokeStyle='#2a2e33';cx.beginPath();cx.moveTo(0,WAVE_H+2);cx.lineTo(W,WAVE_H+2);cx.stroke();
+  // word blocks — draggable, with edge handles
   words.forEach((w,i)=>{
-    const x=t2x(w.start), ww=Math.max(1.5,t2x(w.end)-t2x(w.start));
-    cx.fillStyle=selIdx.includes(i)?'#378ADD':cls(w)==='bad'?'#8c3a39':cls(w)==='warn'?'#8a6320':'#2f6d5b';
-    cx.fillRect(x,110,ww,26);
-    if(ww>26){cx.fillStyle='#e8e6e3';cx.font='11px sans-serif';cx.save();cx.beginPath();cx.rect(x,110,ww,26);cx.clip();cx.fillText(w.text,x+3,127);cx.restore()}
+    const x=t2x(w.start), ww=Math.max(2,t2x(w.end)-t2x(w.start));
+    if(x>W||x+ww<0)return;
+    const sel=selIdx.includes(i);
+    cx.fillStyle=sel?'#378ADD':cls(w)==='bad'?'#8c3a39':cls(w)==='warn'?'#8a6320':'#2f6d5b';
+    cx.fillRect(x,LANE_Y,ww,LANE_H);
+    if(ww>14){ // edge handles
+      cx.fillStyle='rgba(255,255,255,.30)';
+      cx.fillRect(x,LANE_Y,3,LANE_H); cx.fillRect(x+ww-3,LANE_Y,3,LANE_H);
+    }
+    if(ww>24){cx.fillStyle='#eceae7';cx.font='12px sans-serif';cx.save();
+      cx.beginPath();cx.rect(x,LANE_Y,ww,LANE_H);cx.clip();
+      cx.fillText(w.text,x+5,LANE_Y+30);cx.restore()}
   });
-  cx.strokeStyle='#2a2e33';cx.beginPath();cx.moveTo(0,108);cx.lineTo(W,108);cx.stroke();
-  const t=now(); cx.strokeStyle='#EF9F27';cx.lineWidth=1.5;cx.beginPath();cx.moveTo(t2x(t),0);cx.lineTo(t2x(t),H);cx.stroke();cx.lineWidth=1;
+  // playhead
+  const t=now(); stageAt(t);
+  const px=t2x(t);
+  if(px>=0&&px<=W){cx.strokeStyle='#EF9F27';cx.lineWidth=1.5;cx.beginPath();cx.moveTo(px,0);cx.lineTo(px,H);cx.stroke();cx.lineWidth=1;}
+  // time ruler
+  cx.fillStyle='#6f6b66';cx.font='10px ui-monospace,monospace';
+  const step = vSpan()>60?10:vSpan()>20?5:vSpan()>8?2:vSpan()>3?1:0.5;
+  for(let tt=Math.ceil(vA()/step)*step; tt<vB(); tt+=step){
+    const x=t2x(tt); cx.fillRect(x,H-12,1,6);
+    cx.fillText(tt.toFixed(step<1?1:0)+'s', x+3, H-3);
+  }
 }
 function cls(w){const j=w.judge_v0; if(j==null)return 'ok'; return j<=thrBad?'bad':j<=thrWarn?'warn':'ok'}
 function now(){return playing?off0+(A.currentTime-t0)*rate:off0}
@@ -193,7 +292,10 @@ function renderWords(){
     s.textContent=w.text; s.title=`${w.start.toFixed(2)}–${w.end.toFixed(2)}s${w.judge_v0!=null?' · judge '+(+w.judge_v0).toFixed(2):''}`;
     s.onclick=ev=>{ if(ev.shiftKey&&selIdx.length){const a=Math.min(selIdx[0],i),b=Math.max(selIdx[0],i);selIdx=[];for(let k=a;k<=b;k++)selIdx.push(k)}
       else selIdx=[i];
-      selA=words[Math.min(...selIdx)].start; selB=words[Math.max(...selIdx)].end; syncSel(); };
+      selA=words[Math.min(...selIdx)].start; selB=words[Math.max(...selIdx)].end;
+      // frame the word when it is off-screen
+      if(view.b>view.a && (selA<vA()||selB>vB())) setView(selA-vSpan()*0.3, selA-vSpan()*0.3+vSpan());
+      syncSel(); };
     c.appendChild(s);
   });
 }
@@ -206,18 +308,74 @@ function syncSel(){
   $('#lyr').value=selIdx.map(i=>words[i].text).join(' ');
   renderWords(); draw();
 }
-// waveform drag-select
-let dragging=false;
-cv.onmousedown=e=>{const r=cv.getBoundingClientRect();selA=x2t(e.clientX-r.left);selB=selA;selIdx=[];dragging=true;draw()};
-cv.onmousemove=e=>{if(!dragging)return;const r=cv.getBoundingClientRect();selB=x2t(e.clientX-r.left);draw()};
-addEventListener('mouseup',()=>{if(!dragging)return;dragging=false;
-  if(Math.abs(selB-selA)<0.02){seek(selA);selA=selB=null;selIdx=[]} else{selIdx=[];syncSel()} draw()});
+
+// ---- interaction: region select on the wave, direct edit on the lane ------
+let drag=null;   // {mode:'sel'|'move'|'trimL'|'trimR'|'pan', i, t0, w0:{s,e}, viewA}
+function hitWord(x,t){
+  for(let i=words.length-1;i>=0;i--){
+    const a=t2x(words[i].start), b=t2x(words[i].end);
+    if(x>=a-3 && x<=b+3){
+      if(x<=a+5) return {i, mode:'trimL'};
+      if(x>=b-5) return {i, mode:'trimR'};
+      return {i, mode:'move'};
+    }
+  }
+  return null;
+}
+cv.onmousedown=e=>{
+  const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top, t=x2t(x);
+  if(e.altKey || e.button===1){ drag={mode:'pan', x0:x, viewA:vA()}; return; }
+  if(y>=LANE_Y-6 && y<=LANE_Y+LANE_H+6 && words.length){
+    const h=hitWord(x,t);
+    if(h){ snapshot();
+      drag={mode:h.mode, i:h.i, t0:t, s0:words[h.i].start, e0:words[h.i].end};
+      selIdx=[h.i]; selA=words[h.i].start; selB=words[h.i].end; syncSel(); return; }
+  }
+  drag={mode:'sel'}; selA=t; selB=t; selIdx=[]; draw();
+};
+cv.onmousemove=e=>{
+  const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top, t=x2t(x);
+  if(!drag){
+    const over = (y>=LANE_Y-6&&y<=LANE_Y+LANE_H+6) ? hitWord(x,t) : null;
+    cv.style.cursor = over ? (over.mode==='move'?'grab':'ew-resize') : 'crosshair';
+    return;
+  }
+  if(drag.mode==='pan'){ setView(drag.viewA-(x-drag.x0)/cvw()*vSpan(), drag.viewA-(x-drag.x0)/cvw()*vSpan()+vSpan()); return; }
+  if(drag.mode==='sel'){ selB=t; draw(); return; }
+  const w=words[drag.i], d=t-drag.t0, snap=!e.shiftKey;
+  const fix=v=> snap&&nov ? (Math.abs(onsetNear(v,0.10)-v)<0.10 ? onsetNear(v,0.10) : v) : v;
+  if(drag.mode==='move'){ const len=drag.e0-drag.s0;
+    w.start=Math.max(0,+(fix(drag.s0+d)).toFixed(3)); w.end=+(w.start+len).toFixed(3); }
+  else if(drag.mode==='trimL'){ w.start=Math.min(w.end-0.05, Math.max(0,+(fix(drag.s0+d)).toFixed(3))); }
+  else { w.end=Math.max(w.start+0.05, +(fix(drag.e0+d)).toFixed(3)); }
+  w.duration_s=+(w.end-w.start).toFixed(3);
+  selA=w.start; selB=w.end;
+  $('#selInfo').textContent=`${w.text}  ${w.start.toFixed(2)}–${w.end.toFixed(2)}s  (${(w.end-w.start).toFixed(2)}s)`;
+  draw();
+};
+addEventListener('mouseup',()=>{
+  if(!drag)return;
+  const m=drag.mode; drag=null;
+  if(m==='sel'){ if(Math.abs(selB-selA)<0.02){seek(selA);selA=selB=null;selIdx=[]} else {selIdx=[];syncSel()} draw(); }
+  else if(m==='move'||m==='trimL'||m==='trimR'){ status('edited — ⌘Z to undo'); renderWords(); draw(); }
+});
+cv.addEventListener('wheel', e=>{
+  if(!buf)return; e.preventDefault();
+  const r=cv.getBoundingClientRect(), t=x2t(e.clientX-r.left);
+  if(e.shiftKey){ const d=e.deltaY/cvw()*vSpan(); setView(vA()+d, vB()+d); }
+  else zoomAt(t, e.deltaY>0 ? 1.25 : 0.8);
+}, {passive:false});
+$('#zoomIn').onclick=()=>zoomAt(now(),0.6);
+$('#zoomOut').onclick=()=>zoomAt(now(),1.7);
+$('#zoomFit').onclick=()=>{view={a:0,b:0};draw()};
+$('#zoomSel').onclick=()=>{ if(selA==null||selB==null)return;
+  const a=Math.min(selA,selB), b=Math.max(selA,selB), pad=(b-a)*0.25+0.2; setView(a-pad,b+pad); };
 
 function seek(t){off0=Math.max(0,Math.min(dur(),t)); if(playing){stop();start()} draw()}
 function start(){ if(!buf)return; src=A.createBufferSource();src.buffer=buf;src.playbackRate.value=rate;src.connect(A.destination);
   src.start(0,off0); t0=A.currentTime; playing=true; $('#play').textContent='pause'; tick()}
 function stop(){ if(src){try{src.stop()}catch(e){}} off0=now(); playing=false; $('#play').textContent='play'}
-function tick(){ if(!playing)return; draw(); if(capturing)highlightCap(); requestAnimationFrame(tick)}
+function tick(){ if(!playing)return; followPlayhead(); draw(); if(capturing)highlightCap(); requestAnimationFrame(tick)}
 $('#play').onclick=()=>{A=A||new AudioContext(); playing?stop():start()};
 $('#rate').oninput=e=>{rate=+e.target.value;$('#rateOut').textContent=rate+'×';if(playing){stop();start()}};
 $('#lat').oninput=e=>$('#latOut').textContent=e.target.value+'ms';
@@ -281,6 +439,9 @@ addEventListener('keydown',e=>{
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z'){e.preventDefault();$('#undo').click();return}
   if(e.key==='c'||e.key==='C'){e.preventDefault();toggleCap();return}
   if(e.key==='f'||e.key==='F'){e.preventDefault();nextFlag();return}
+  if(e.key==='+'||e.key==='='){e.preventDefault();zoomAt(now(),0.6);return}
+  if(e.key==='-'||e.key==='_'){e.preventDefault();zoomAt(now(),1.7);return}
+  if(e.key==='0'){e.preventDefault();view={a:0,b:0};draw();return}
   if(e.key==='ArrowLeft'){e.preventDefault();seek(now()-(e.shiftKey?5:1));return}
   if(e.key==='ArrowRight'){e.preventDefault();seek(now()+(e.shiftKey?5:1));return}
   if(e.code!=='Space')return; e.preventDefault();
