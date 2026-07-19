@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Path B sheet-completeness + suspect-span gate (Claude lab reel_gate 2026-07-19).
 
-Validated (song C pair on demo reel reel stem):
+Validated (song C pair on demo-4 reel stem):
   incomplete sheet → FAIL-LOUD 0–17.9s with heard-text naming missing lines
   fixed sheet      → that span quiet
 
@@ -79,20 +79,46 @@ def best_sheet_sim(heard: str, sheet_norms: list[str]) -> float:
     )
 
 
+def _decode_with_ffmpeg(path: Path, sr: int | None) -> tuple[np.ndarray, int]:
+    """Fallback decoder: stdlib `wave` only handles PCM. Real-world masters are
+    often WAVE_FORMAT_EXTENSIBLE (tag 65534), 24-bit, float, or not WAV at all.
+    ffmpeg is already a hard dependency, so decode through it.
+    """
+    import shutil
+    import subprocess
+
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        raise RuntimeError("ffmpeg not on PATH; cannot decode audio for gate")
+    out_sr = sr or 44100
+    cmd = [exe, "-v", "error", "-i", str(path), "-f", "s16le", "-acodec", "pcm_s16le",
+           "-ac", "1", "-ar", str(out_sr), "-"]
+    raw = subprocess.run(cmd, capture_output=True, check=True).stdout
+    y = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    return y, out_sr
+
+
 def _load_mono_float(path: Path, *, target_sr: int | None = 16000) -> tuple[np.ndarray, int]:
     import wave
 
     path = Path(path)
-    with wave.open(str(path), "rb") as f:
-        sr = f.getframerate()
-        y = (
-            np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(
-                np.float32
+    try:
+        with wave.open(str(path), "rb") as f:
+            if f.getsampwidth() != 2:
+                raise wave.Error(f"unsupported sample width {f.getsampwidth()}")
+            sr = f.getframerate()
+            y = (
+                np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(
+                    np.float32
+                )
+                / 32768.0
             )
-            / 32768.0
-        )
-        if f.getnchannels() > 1:
-            y = y.reshape(-1, f.getnchannels()).mean(axis=1)
+            if f.getnchannels() > 1:
+                y = y.reshape(-1, f.getnchannels()).mean(axis=1)
+    except Exception:
+        # EXTENSIBLE / 24-bit / float / non-WAV → decode via ffmpeg
+        y, sr = _decode_with_ffmpeg(path, target_sr)
+        return y.astype(np.float32), sr
     if target_sr is not None and sr != target_sr:
         import torch
         import torchaudio
@@ -128,7 +154,7 @@ def detect_engineered_splices(
     MUST use mix audio, not stem (demucs blurs zeros; stem zeros = rests).
     Self-disables on continuous audio (returns []).
 
-    Validated on demo reel reel: three 0.22s joins at 46.00 / 92.22 / 138.44.
+    Validated on demo-4 reel: three 0.22s joins at 46.00 / 92.22 / 138.44.
     """
     # Native rate — do not resample before zero detection (preserves exact zeros)
     y, sr = _load_mono_float(Path(mix_path), target_sr=None)
@@ -456,8 +482,8 @@ def run_sheet_gate(
         },
         "fail_loud": fail_loud,
         "lab_validation_2026_07_19": {
-            "song C_incomplete": "FAIL-LOUD 0-17.9s validated",
-            "song C_fixed": "that span quiet",
+            "faith_incomplete": "FAIL-LOUD 0-17.9s validated",
+            "faith_fixed": "that span quiet",
             "ad_lib_class": "AD_LIB abstain not fail-loud",
             "repeat_tier": "REPEAT_OF_KNOWN_LINE + adjacent line-pairs",
             "splice_detector": "MIX digital zeros ≥0.1s → hard fusion cuts",

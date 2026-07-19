@@ -3,6 +3,7 @@ torch>=2.1
 torchaudio>=2.1          # provides pipelines.MMS_FA + functional.forced_align
 openai-whisper>=20231117
 numpy>=1.24
+librosa>=0.10          # end physics / edge features
 
 # Vocal separation — install in its own venv, the CLI shells out to it:
 #   python3 -m venv ~/.venvs/lyric-lock && ~/.venvs/lyric-lock/bin/pip install demucs==4.0.1
