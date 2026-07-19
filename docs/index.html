@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arkhē Lyric Lock — lyric timing that admits what it doesn't know</title>
+<meta name="description" content="Give it a song and its lyrics. It gives you the timing — and tells you where it isn't sure. Local, self-scoring lyric-video alignment.">
+<style>
+:root{--bg:#0b0c0e;--panel:#141518;--line:#26282d;--tx:#e8e6e3;--tx2:#9d9992;--tx3:#6b6862;
+--acc:#afa9ec;--ok:#5dcaa5;--warn:#ef9f27;--bad:#e24b4a;
+--sans:"Futura","Avenir Next",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+--serif:Georgia,"Iowan Old Style",serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:17px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:860px;margin:0 auto;padding:0 26px}
+header{padding:96px 0 60px}
+h1{font-size:clamp(44px,8vw,86px);line-height:1.02;margin:0;font-weight:500;letter-spacing:-.01em}
+h1 span{color:var(--acc)}
+.tag{font-family:var(--serif);font-size:clamp(19px,2.6vw,25px);color:var(--tx2);margin:22px 0 0;max-width:640px}
+.kick{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--acc);margin:0 0 12px}
+.kick::after{content:"";display:block;width:56px;height:2px;background:var(--acc);margin-top:10px}
+section{padding:44px 0;border-top:1px solid var(--line)}
+h2{font-size:30px;font-weight:500;margin:0 0 16px;letter-spacing:-.01em}
+p{color:var(--tx2);margin:0 0 16px;max-width:660px}
+p.lead{color:var(--tx);font-size:19px}
+strong{color:var(--tx);font-weight:500}
+table{border-collapse:collapse;width:100%;margin:22px 0;font-size:15px}
+th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}
+th{color:var(--tx3);font-weight:400;font-size:13px;letter-spacing:.06em;text-transform:uppercase}
+td.win{color:var(--ok)}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow-x:auto;
+font:14px/1.6 ui-monospace,Menlo,monospace;color:var(--tx2)}
+pre b{color:var(--tx);font-weight:400}
+.flow{font:14px/1.9 ui-monospace,Menlo,monospace;color:var(--tx2);background:var(--panel);
+border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:20px 0}
+ul{color:var(--tx2);padding-left:20px;max-width:660px}
+li{margin:9px 0}
+li b{color:var(--tx);font-weight:500}
+.btns{display:flex;gap:12px;flex-wrap:wrap;margin:28px 0 0}
+a.btn{display:inline-block;padding:12px 20px;border:1px solid var(--line);border-radius:8px;color:var(--tx);
+text-decoration:none;font-size:15px;transition:.15s}
+a.btn:hover{border-color:var(--acc);background:var(--panel)}
+a.btn.pri{background:var(--acc);color:#191636;border-color:var(--acc)}
+a.btn.pri:hover{opacity:.9}
+a{color:var(--acc)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:1px}
+footer{padding:56px 0 90px;color:var(--tx3);font-size:14px;border-top:1px solid var(--line)}
+.note{font-family:var(--serif);font-style:italic;color:var(--tx3);font-size:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Arkhē<br><span>Lyric Lock</span></h1>
+  <p class="tag">Give it a song and its lyrics. It gives you the timing — and tells you where it isn&rsquo;t sure.</p>
+  <div class="btns">
+    <a class="btn pri" href="https://github.com/AdemVessell/arkhe-lyric-lock">Code on GitHub</a>
+    <a class="btn" href="bench/">Open the repair bench</a>
+  </div>
+</header>
+
+<section>
+  <p class="kick">the problem</p>
+  <h2>Syncing lyrics to audio is stubbornly manual.</h2>
+  <p class="lead">Most people reach for a transcription model. On sung material it stumbles: held vowels stretch
+  past what speech models expect, dense mixes mask consonants, ad-libs and vamps aren&rsquo;t in any sheet.
+  So you end up typing timestamps by hand, word by word.</p>
+</section>
+
+<section>
+  <p class="kick">the shift that fixes it</p>
+  <h2>Don&rsquo;t transcribe. Align.</h2>
+  <p>Transcription asks <em>what was sung</em> — a hard question. Forced alignment is handed the lyrics and asks
+  only <em>when does each word occur</em> — a far easier one. Run it on a separated vocal stem and the numbers
+  change completely.</p>
+  <table>
+    <tr><th>spine</th><th>mean onset error</th><th>within 150&nbsp;ms</th></tr>
+    <tr><td>attention alignment (stable-ts)</td><td>540 ms</td><td>9 / 29</td></tr>
+    <tr><td><strong>CTC alignment (MMS_FA) on vocal stem</strong></td><td class="win">92 ms</td><td class="win">23 / 29</td></tr>
+  </table>
+  <p class="note">Bias-corrected, measured against human-tapped ground truth on the same audio and lyrics.
+  Alignment takes about 8 seconds for 90 seconds of audio, on CPU.</p>
+</section>
+
+<section>
+  <p class="kick">how it works</p>
+  <h2>Five stages, one command.</h2>
+  <div class="flow">
+    audio + lyrics.txt<br>
+    &nbsp;&nbsp;↓&nbsp; demucs separates the vocal<br>
+    &nbsp;&nbsp;↓&nbsp; CTC forced alignment places every word of your sheet<br>
+    &nbsp;&nbsp;↓&nbsp; a second pass re-times held notes the aligner rushes<br>
+    &nbsp;&nbsp;↓&nbsp; onsets snap to where the voice actually starts<br>
+    &nbsp;&nbsp;↓&nbsp; the run scores itself and flags what it doubts<br>
+    timed.json · word SRT · line SRT · reference video
+  </div>
+  <p>The SRTs import straight into Final Cut, Premiere, Resolve or After Effects.
+  <strong>The styling stays yours</strong> — the built-in video is a plain reference render, not the product.</p>
+</section>
+
+<section>
+  <p class="kick">the part nobody ships</p>
+  <h2>It tells you where it&rsquo;s unsure.</h2>
+  <ul>
+    <li><span class="dot" style="background:var(--ok)"></span><b>Every word carries a confidence score</b>, with thresholds computed per song — absolute cutoffs don&rsquo;t transfer between a ballad and a rap.</li>
+    <li><span class="dot" style="background:var(--bad)"></span><b>Sung regions your sheet doesn&rsquo;t cover are named out loud</b>, quoting what was heard there — and the run aborts rather than silently showing a blank screen.</li>
+    <li><span class="dot" style="background:var(--warn)"></span><b>Ad-libs abstain</b> instead of being forced into lyrics they don&rsquo;t match.</li>
+    <li><span class="dot" style="background:var(--ok)"></span><b>Repeated lines already in your sheet are auto-recovered</b> without bothering you.</li>
+  </ul>
+  <pre>$ lyric_lock run --audio song.wav --lyrics sheet.txt --separate
+
+  CTC forced-align (MMS_FA) star=True display_lead=0.000s ...
+  Path B sheet gate (preflight) ...
+  <b>GATE FAIL-LOUD 0.00-17.90s  MISSING_LYRICS</b>
+      heard: '...'
+<b>RuntimeError: sheet gate FAIL LOUD: sung region(s) missing from lyrics</b></pre>
+  <p>When it can&rsquo;t place a word honestly, it shows nothing rather than a lie.</p>
+</section>
+
+<section>
+  <p class="kick">hand-tuning, when you want it</p>
+  <h2>The corrections are already queued.</h2>
+  <p>Low-confidence words arrive pre-flagged in the browser bench. Press <b>F</b> to jump to the next
+  thing the machine doubted; hold <b>space</b> through a word to re-time it — your tap snaps to the real
+  onset, so rough timing is fine. Nudge, ripple a phrase, or edit the lyrics for a region, then export
+  back to <code>timed.json</code> or SRT.</p>
+  <p><strong>Most songs need none of this. It&rsquo;s ready anyway.</strong></p>
+  <p class="note">The bench runs entirely in your browser — no server, nothing uploaded. Your masters never
+  leave the machine.</p>
+  <div class="btns"><a class="btn" href="bench/">Open the repair bench</a></div>
+</section>
+
+<section>
+  <p class="kick">honest limits</p>
+  <h2>What it doesn&rsquo;t do.</h2>
+  <ul>
+    <li><b>It needs the lyric text.</b> It finds the timing, not the words. Lyrics-free transcription of
+    singing is not a solved problem — our own falsified attempts are kept in the repo.</li>
+    <li><b>Very fast dense rap still jitters</b> — word boundaries blur and function words collapse.</li>
+    <li><b>Backing vocals and parentheticals are skipped by design.</b></li>
+    <li><b>Validated by ear on a handful of songs</b>, not on a public benchmark. Treat the numbers as
+    measured-here, not as a leaderboard claim.</li>
+    <li><b>The default aligner weights are CC-BY-NC</b> (non-commercial). A permissively licensed aligner
+    can be swapped in — see NOTICE.md.</li>
+  </ul>
+</section>
+
+<section>
+  <p class="kick">method</p>
+  <h2>Negative results kept on purpose.</h2>
+  <p>The repo keeps the failures: the falsified transcription path, the demoted repair mechanisms, and a
+  display-lead constant that turned out to be captured human anticipation rather than a real preference.
+  The reasoning that produced the working stack is in <code>notes/eval/</code>.</p>
+</section>
+
+<footer>
+  <div class="wrap" style="padding:0">
+    Arkhē research object · inspired-by, own implementation · MIT for our code,
+    see <a href="https://github.com/AdemVessell/arkhe-lyric-lock/blob/main/NOTICE.md">NOTICE</a> for model licences.
+  </div>
+</footer>
+
+</div>
+</body>
+</html>
