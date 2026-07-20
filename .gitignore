@@ -10,6 +10,7 @@ work/
 
 # except the published showcase film
 !docs/showcase.mp4
+!docs/we_shared_3d.mp4
 
 # private material
 fixtures/
