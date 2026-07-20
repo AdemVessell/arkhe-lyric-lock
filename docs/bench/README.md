@@ -40,6 +40,11 @@ Cold-eval runs to try it on:
 Workflow: press <kbd>F</kbd>, listen, fix or accept, press <kbd>F</kbd> again. You
 only ever review what the machine doubts.
 
+## The loop, in one sentence
+
+**Drag to select a part → space plays just that part on repeat → hold `J` through each word
+as you hear it.** Click anywhere to let the selection go.
+
 ## Repair tools
 
 | Tool | Use |

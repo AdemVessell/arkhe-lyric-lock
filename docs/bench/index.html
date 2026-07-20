@@ -31,6 +31,14 @@ min-height:80px;transition:opacity .06s linear}
 #stageWord.idle{opacity:.12;font-size:34px;font-weight:400;letter-spacing:2px}
 #stageLine{font-size:15px;color:var(--tx3);letter-spacing:.4px;min-height:20px}
 #stageLine b{color:var(--tx2);font-weight:500}
+#chunks{margin-top:8px;display:none;gap:6px;flex-wrap:wrap}
+#chunks.on{display:flex}
+.chunk{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:6px 10px;
+cursor:pointer;font-size:12px;color:var(--tx2);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chunk:hover{border-color:var(--cap)}
+.chunk.done{opacity:.45;border-color:#1d3b32;color:#8fdcc0}
+.chunk.active{border-color:var(--cap);color:var(--tx);background:#1d1a2e}
+.chunk b{color:var(--tx);font-weight:500}
 #words{margin-top:10px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;max-height:190px;overflow:auto}
 .w{display:inline-block;margin:2px;padding:3px 8px;border-radius:5px;font-size:13px;border:1px solid transparent;cursor:pointer;white-space:nowrap}
 .w.ok{background:#12251f;color:#8fdcc0;border-color:#1d3b32}
@@ -83,6 +91,18 @@ kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padd
     <button id="clearSel">clear selection</button>
     <span class="pill" id="selInfo">no selection</span>
   </div>
+  <div id="fixbar" class="row" style="margin-top:12px">
+    <button id="fixMode">fix mode <kbd>X</kbd></button>
+    <button id="loopBtn">loop: on</button>
+    <button id="leadLess">lead −</button>
+    <button id="leadMore">lead +</button>
+    <button id="prevChunk">◀ prev</button>
+    <button id="nextChunk">next ▶</button>
+    <button id="rate75">0.75×</button>
+    <button id="rate100">1×</button>
+    <span class="pill" id="fixInfo">fix mode off</span>
+  </div>
+  <div id="chunks"></div>
   <div id="stage">
     <div id="stageWord">&nbsp;</div>
     <div id="stageLine"></div>
@@ -112,9 +132,10 @@ const $=s=>document.querySelector(s);
 let A=null, buf=null, peaks=null, nov=null, novHop=0.01, words=[], undoStack=[];
 let src=null, playing=false, t0=0, off0=0, rate=1;
 let selA=null, selB=null, selIdx=[], capturing=false, capQ=[], capI=0, capDown=null, rippleOn=false;
-let thrBad=-3.3, thrWarn=-2.2, gateSpans=[], flagCursor=-1;
+let thrBad=-3.3, thrWarn=-2.2, gateSpans=[], flagCursor=-1, armSig='';
 const cv=$('#wave'), cx=cv.getContext('2d');
 function status(m){$('#status').textContent=m}
+document.addEventListener('click', e=>{ if(e.target.tagName==='BUTTON') e.target.blur(); });
 function cvw(){return Math.round(cv.getBoundingClientRect().width)||cv.clientWidth||900}
 function fit(){const w=cvw();cv.width=w*devicePixelRatio;cv.height=210*devicePixelRatio;cx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);draw()}
 addEventListener('resize',fit);
@@ -200,9 +221,33 @@ function followPlayhead(){
 }
 const LANE_Y=142, LANE_H=48, WAVE_H=132;        // layout constants
 
+let lastNowChip=-1;
+function markPlayingChip(t){
+  const kids=$('#words').children; if(!kids.length)return;
+  let cur=-1;
+  for(let i=0;i<words.length;i++){ if(words[i].start<=t && t<words[i].end){cur=i;break} }
+  if(cur===lastNowChip)return;
+  if(lastNowChip>=0 && kids[lastNowChip]) kids[lastNowChip].style.boxShadow='';
+  if(cur>=0 && kids[cur]){ kids[cur].style.boxShadow='inset 0 0 0 2px #EF9F27';
+    const c=$('#words'), el=kids[cur];
+    if(el.offsetTop < c.scrollTop || el.offsetTop > c.scrollTop + c.clientHeight - 24)
+      c.scrollTop = el.offsetTop - c.clientHeight/2;
+  }
+  lastNowChip=cur;
+}
 function stageAt(t){
   const el=document.getElementById('stageWord'), ln=document.getElementById('stageLine');
   if(!el)return;
+  if(capturing && capI<capQ.length && (!playing || capDown!=null)){   // paused or mid-hold: show what you're timing
+    const w=words[capQ[capI]];
+    el.classList.remove('idle');
+    el.textContent=w.text;
+    el.style.color = capDown!=null ? '#AFA9EC' : '#f2f0ed';
+    ln.innerHTML = capQ.map((k,j)=> j<capI ? `<span style="opacity:.35">${words[k].text}</span>`
+                       : j===capI ? `<b>${words[k].text}</b>` : words[k].text).join(' ')
+                 + `<span style="opacity:.5">   —   ${capI}/${capQ.length} timed${capDown!=null?' · holding…':''}</span>`;
+    return;
+  }
   let cur=-1;
   for(let i=0;i<words.length;i++){ if(words[i].start<=t && t<words[i].end){cur=i;break} }
   if(cur<0){ el.textContent='(silence)'; el.classList.add('idle'); ln.innerHTML=''; return; }
@@ -271,10 +316,23 @@ function draw(){
       cx.beginPath();cx.rect(x,LANE_Y,ww,LANE_H);cx.clip();
       cx.fillText(w.text,x+5,LANE_Y+30);cx.restore()}
   });
+  // loop region
+  const L=loopBounds();
+  if(loopOn && L){
+    const x0=t2x(L[0]), x1=t2x(L[1]);
+    cx.fillStyle='rgba(93,202,165,.10)'; cx.fillRect(x0,0,Math.max(1,x1-x0),WAVE_H);
+    cx.strokeStyle='#5DCAA5'; cx.lineWidth=2;
+    cx.beginPath(); cx.moveTo(x0,0); cx.lineTo(x0,WAVE_H); cx.moveTo(x1,0); cx.lineTo(x1,WAVE_H); cx.stroke();
+    cx.lineWidth=1; cx.fillStyle='#5DCAA5'; cx.font='10px sans-serif'; cx.fillText('loop', x0+4, WAVE_H-6);
+  }
   // playhead
-  const t=now(); stageAt(t);
+  const t=now(); stageAt(t); markPlayingChip(t);
   const px=t2x(t);
-  if(px>=0&&px<=W){cx.strokeStyle='#EF9F27';cx.lineWidth=1.5;cx.beginPath();cx.moveTo(px,0);cx.lineTo(px,H);cx.stroke();cx.lineWidth=1;}
+  if(px>=0&&px<=W){
+    cx.strokeStyle='#EF9F27';cx.lineWidth=1.5;cx.beginPath();cx.moveTo(px,0);cx.lineTo(px,H);cx.stroke();cx.lineWidth=1;
+    cx.fillStyle='#EF9F27';                       // grab handle
+    cx.beginPath();cx.moveTo(px-7,0);cx.lineTo(px+7,0);cx.lineTo(px,13);cx.closePath();cx.fill();
+  }
   // time ruler
   cx.fillStyle='#6f6b66';cx.font='10px ui-monospace,monospace';
   const step = vSpan()>60?10:vSpan()>20?5:vSpan()>8?2:vSpan()>3?1:0.5;
@@ -307,13 +365,22 @@ function syncSel(){
     const a=Math.min(selA,selB),b=Math.max(selA,selB);
     selIdx=words.map((w,i)=>[w,i]).filter(([w])=>w.start<b&&w.end>a).map(([,i])=>i);
   }
-  $('#selInfo').textContent=selIdx.length?`${selIdx.length} words · ${Math.min(selA,selB).toFixed(2)}–${Math.max(selA,selB).toFixed(2)}s`:'no selection';
+  // selecting words IS arming: the J queue follows the selection, always.
+  if(selIdx.length){
+    const sig=selIdx.join(',');
+    if(sig!==armSig){ armSig=sig; capQ=[...selIdx]; capI=0; capDown=null; capturing=true;
+      $('#capture').classList.add('on'); }
+  } else { armSig=''; capturing=false; capQ=[]; capI=0; $('#capture').classList.remove('on'); }
+  $('#selInfo').textContent = selIdx.length
+    ? `${selIdx.length} word${selIdx.length>1?'s':''} · SPACE plays this part on repeat · hold J for "${words[capQ[capI]]?words[capQ[capI]].text:''}"`
+    : 'no selection';
   $('#lyr').value=selIdx.map(i=>words[i].text).join(' ');
   renderWords(); draw();
 }
 
 // ---- interaction: region select on the wave, direct edit on the lane ------
-let drag=null;   // {mode:'sel'|'move'|'trimL'|'trimR'|'pan', i, t0, w0:{s,e}, viewA}
+let drag=null;   // {mode:'sel'|'move'|'trimL'|'trimR'|'pan'|'scrub', ...}
+let prevSelA=null, prevSelB=null, prevSelIdx=[];
 function hitWord(x,t){
   for(let i=words.length-1;i>=0;i--){
     const a=t2x(words[i].start), b=t2x(words[i].end);
@@ -328,6 +395,15 @@ function hitWord(x,t){
 cv.onmousedown=e=>{
   const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top, t=x2t(x);
   if(e.altKey || e.button===1){ drag={mode:'pan', x0:x, viewA:vA()}; return; }
+  // playhead: grab the orange line itself, or anywhere on the ruler strip
+  const px=t2x(now());
+  if(Math.abs(x-px)<=9 || y>r.height-30){
+    drag={mode:'scrub', wasPlaying:playing};
+    if(playing) stop();
+    off0=Math.max(0,Math.min(dur(), t)); draw();
+    status('scrubbing — release to drop the playhead (selection kept)');
+    return;
+  }
   if(y>=LANE_Y-6 && y<=LANE_Y+LANE_H+6 && words.length){
     const h=hitWord(x,t);
     // inside an existing multi-word selection -> move the whole chunk together
@@ -346,15 +422,19 @@ cv.onmousedown=e=>{
       drag={mode:h.mode, i:h.i, t0:t, s0:words[h.i].start, e0:words[h.i].end};
       selIdx=[h.i]; selA=words[h.i].start; selB=words[h.i].end; syncSel(); return; }
   }
+  prevSelA=selA; prevSelB=selB; prevSelIdx=[...selIdx];
   drag={mode:'sel'}; selA=t; selB=t; selIdx=[]; draw();
 };
 cv.onmousemove=e=>{
   const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top, t=x2t(x);
   if(!drag){
+    const px=t2x(now());
+    if(Math.abs(x-px)<=9 || y>r.height-30){ cv.style.cursor='col-resize'; return; }
     const over = (y>=LANE_Y-6&&y<=LANE_Y+LANE_H+6) ? hitWord(x,t) : null;
     cv.style.cursor = over ? (over.mode==='move'?'grab':'ew-resize') : 'crosshair';
     return;
   }
+  if(drag.mode==='scrub'){ off0=Math.max(0,Math.min(dur(), t)); draw(); return; }
   if(drag.mode==='pan'){ setView(drag.viewA-(x-drag.x0)/cvw()*vSpan(), drag.viewA-(x-drag.x0)/cvw()*vSpan()+vSpan()); return; }
   if(drag.mode==='sel'){ selB=t; draw(); return; }
   if(drag.mode==='moveGroup'){
@@ -383,10 +463,31 @@ cv.onmousemove=e=>{
 };
 addEventListener('mouseup',()=>{
   if(!drag)return;
-  const m=drag.mode; drag=null;
-  if(m==='sel'){ if(Math.abs(selB-selA)<0.02){seek(selA);selA=selB=null;selIdx=[]} else {selIdx=[];syncSel()} draw(); }
+  const m=drag.mode, wasPlaying=drag.wasPlaying; drag=null;
+  if(m==='scrub'){
+    if(wasPlaying) start();
+    status(`playhead at ${off0.toFixed(2)}s · space plays · hold J to time "${capQ.length&&capI<capQ.length?words[capQ[capI]].text:'—'}"`);
+    draw(); return;
+  }
+  if(m==='sel'){
+    if(Math.abs(selB-selA)<0.02){
+      // a plain click CLEARS the selection and just moves the playhead:
+      // free scrubbing, no loop, nothing armed
+      const t=selA;
+      selA=selB=null; selIdx=[]; armSig=''; capturing=false; capQ=[]; capI=0;
+      $('#capture').classList.remove('on');
+      seek(t); syncSel();
+      status(`playhead ${t.toFixed(2)}s · selection cleared — drag to select a part`);
+    } else {
+      selIdx=[]; armSig=''; syncSel();
+      if(selIdx.length) status(`${selIdx.length} word${selIdx.length>1?'s':''} · space plays this part · hold J for "${words[capQ[0]].text}"`);
+    }
+    draw();
+  }
   else if(m==='move'||m==='trimL'||m==='trimR'||m==='moveGroup'){
-    autosave(); status('edited — ⌘Z to undo · autosaved'); renderWords(); draw(); }
+    autosave(); armSig=''; lastNowChip=-1; syncSel();   // keep the selection armed after a drag
+    status('moved — still armed, hold J to re-time · space = play · ⌘Z undo');
+    renderWords(); draw(); }
 });
 cv.ondblclick=e=>{
   const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
@@ -397,8 +498,22 @@ cv.ondblclick=e=>{
 cv.addEventListener('wheel', e=>{
   if(!buf)return; e.preventDefault();
   const r=cv.getBoundingClientRect(), t=x2t(e.clientX-r.left);
-  if(e.shiftKey){ const d=e.deltaY/cvw()*vSpan(); setView(vA()+d, vB()+d); }
-  else zoomAt(t, e.deltaY>0 ? 1.25 : 0.8);
+  const dx=e.deltaX||0, dy=e.deltaY||0;
+  // horizontal two-finger swipe = scroll only, never zoom
+  if(Math.abs(dx) > Math.abs(dy)){
+    const d = dx/cvw()*vSpan();
+    setView(vA()+d, vB()+d);
+    return;
+  }
+  // pinch (trackpad sends ctrlKey) or ⌘+wheel = zoom, still gentle
+  if(e.ctrlKey || e.metaKey){
+    const f = Math.exp(dy*0.006);
+    zoomAt(t, Math.max(0.85, Math.min(1.18, f)));
+    return;
+  }
+  // plain vertical wheel = slow zoom (was 1.25x per tick — far too fast)
+  const f = Math.exp(dy*0.0022);
+  zoomAt(t, Math.max(0.94, Math.min(1.07, f)));
 }, {passive:false});
 $('#zoomIn').onclick=()=>zoomAt(now(),0.6);
 $('#zoomOut').onclick=()=>zoomAt(now(),1.7);
@@ -410,8 +525,19 @@ function seek(t){off0=Math.max(0,Math.min(dur(),t)); if(playing){stop();start()}
 function start(){ if(!buf)return; src=A.createBufferSource();src.buffer=buf;src.playbackRate.value=rate;src.connect(A.destination);
   src.start(0,off0); t0=A.currentTime; playing=true; $('#play').textContent='pause'; tick()}
 function stop(){ if(src){try{src.stop()}catch(e){}} off0=now(); playing=false; $('#play').textContent='play'}
-function tick(){ if(!playing)return; followPlayhead(); draw(); if(capturing)highlightCap(); requestAnimationFrame(tick)}
-$('#play').onclick=()=>{A=A||new AudioContext(); playing?stop():start()};
+function tick(){ if(!playing)return;
+  if(loopOn){
+    const L=loopBounds();
+    if(L && now() > L[1]) seek(L[0]);       // repeat the selected part
+  }
+  followPlayhead(); draw(); if(capturing)highlightCap(); requestAnimationFrame(tick)}
+$('#play').onclick=()=>{
+  A=A||new AudioContext();
+  if(playing){ stop(); return; }
+  const L=loopBounds();
+  if(loopOn && L) seek(L[0]);
+  start();
+};
 $('#rate').oninput=e=>{rate=+e.target.value;$('#rateOut').textContent=rate+'×';if(playing){stop();start()}};
 $('#lat').oninput=e=>$('#latOut').textContent=e.target.value+'ms';
 
@@ -439,17 +565,29 @@ function restoreOffer(){
   }catch(e){}
 }
 function addWordAt(t, text){
-  if(text==null) text=prompt('new word text','');
+  if(text==null) text=prompt('add word(s) — a whole line works; they are placed in order from the playhead','');
   if(text==null) return;
-  text=String(text).trim(); if(!text) return;
-  snapshot();
-  const w={text, start:+(+t).toFixed(3), end:+(+t+0.40).toFixed(3), duration_s:0.4,
-           source:'manual_add', judge_v0:null,
-           line_id:(words.find(x=>x.start>=t)||words[words.length-1]||{}).line_id ?? null};
-  let i=words.findIndex(x=>x.start>t); if(i<0)i=words.length;
-  words.splice(i,0,w); words.forEach((x,k)=>x._i=k);
-  selIdx=[i]; selA=w.start; selB=w.end;
-  autosave(); syncSel(); status(`added "${text}" at ${w.start.toFixed(2)}s — drag its edges to fit`);
+  const toks=String(text).trim().split(/\s+/).filter(Boolean);
+  if(!toks.length) return;
+  snapshot(); lastNowChip=-1;
+  const DUR=0.35, GAP=0.05;          // provisional spacing — you retime with J anyway
+  let at=Math.max(0,t); const added=[];
+  toks.forEach(tok=>{
+    const w={text:tok, start:+at.toFixed(3), end:+(at+DUR).toFixed(3), duration_s:DUR,
+             source:'manual_add', judge_v0:null,
+             line_id:(words.find(x=>x.start>=at)||words[words.length-1]||{}).line_id ?? null};
+    let i=words.findIndex(x=>x.start>w.start); if(i<0)i=words.length;
+    words.splice(i,0,w); added.push(w);
+    at += DUR+GAP;
+  });
+  words.forEach((x,k)=>x._i=k);
+  // the new words are selected (so J can time them straight away)…
+  selIdx=added.map(w=>words.indexOf(w)).sort((x,y)=>x-y);
+  selA=added[0].start; selB=added[added.length-1].end;
+  // …and the playhead lands AFTER them, ready for the next add
+  off0=Math.min(dur(), at);
+  armSig=''; autosave(); syncSel(); draw();
+  status(`added ${toks.length} word${toks.length>1?'s':''} — playhead now after them · hold J to time, or A again to add more`);
 }
 function deleteSelected(){
   if(!selIdx.length){status('nothing selected');return}
@@ -464,6 +602,91 @@ function renameWord(i){
   const t=prompt('word text', words[i].text); if(t==null)return;
   const v=String(t).trim(); if(!v)return;
   snapshot(); words[i].text=v; autosave(); syncSel(); status(`renamed to "${v}"`);
+}
+// ---- fix mode: work the doubtful parts in focused, looping chunks ----------
+let fixOn=false, chunks=[], chunkI=-1, loopOn=true;
+let PREROLL_S=1.5;
+function loopBounds(){
+  // the selection IS the play region — nothing else defines it
+  if(selA==null||selB==null) return null;
+  const a=Math.max(0, Math.min(selA,selB)-PREROLL_S);
+  const b=Math.max(selA,selB)+0.6;
+  return (b>a+0.3)?[a,b]:null;
+}
+function buildChunks(){
+  const suspect = i => {
+    const w=words[i], src=String(w.source||'');
+    if(/human_capture/.test(src)) return false;          // you already fixed it
+    if(/manual_add|seam|interp|tail_energy|extra_repeat/.test(src)) return true;  // synthetic placement
+    return w.judge_v0!=null && w.judge_v0<=thrBad;        // worst-confidence only
+  };
+  const groups=[]; let cur=null;
+  for(let i=0;i<words.length;i++){
+    if(!suspect(i)){ if(cur && words[i].start-words[cur.idxs[cur.idxs.length-1]].end>1.2){groups.push(cur);cur=null} continue }
+    if(!cur){ cur={idxs:[i]}; continue }
+    const last=cur.idxs[cur.idxs.length-1];
+    if(words[i].start - words[last].end <= 1.6 && cur.idxs.length<14) cur.idxs.push(i);
+    else { groups.push(cur); cur={idxs:[i]} }
+  }
+  if(cur) groups.push(cur);
+  chunks = groups.filter(g=>g.idxs.length).map(g=>({
+    idxs:g.idxs, a:words[g.idxs[0]].start, b:words[g.idxs[g.idxs.length-1]].end, done:false,
+    label:g.idxs.map(i=>words[i].text).join(' ')
+  }));
+  renderChunks();
+}
+function renderChunks(){
+  const c=$('#chunks'); if(!c)return; c.innerHTML='';
+  chunks.forEach((ch,i)=>{
+    const d=document.createElement('div');
+    d.className='chunk'+(ch.done?' done':'')+(i===chunkI?' active':'');
+    d.innerHTML=`<b>${Math.floor(ch.a/60)}:${String(Math.floor(ch.a%60)).padStart(2,'0')}</b> · ${ch.label}`;
+    d.onclick=()=>enterChunk(i);
+    c.appendChild(d);
+  });
+  $('#fixInfo').textContent = fixOn
+    ? `${chunks.filter(c=>!c.done).length} chunks left${chunkI>=0?` · on ${chunkI+1}/${chunks.length}`:''} · hold J per word`
+    : 'fix mode off';
+}
+function enterChunk(i){
+  if(i<0||i>=chunks.length)return;
+  chunkI=i; const ch=chunks[i];
+  selIdx=[...ch.idxs]; selA=ch.a; selB=ch.b;
+  capQ=[...ch.idxs]; capI=0; capturing=true; capDown=null;
+  $('#capture').classList.add('on');
+  setView(ch.a-PREROLL_S-1.0, ch.b+1.5);
+  seek(Math.max(0, ch.a-PREROLL_S));
+  if(!playing) start();
+  syncSel(); renderChunks();
+  status(`chunk ${i+1}/${chunks.length}: "${ch.label}" — hold J through each word · loops with ${PREROLL_S}s lead-in`);
+}
+function commitCapture(st,en){
+  if(capI>=capQ.length) return;
+  snapshot(); lastNowChip=-1;
+  const lat=+$('#lat').value/1000, snap=$('#snapOn').checked;
+  let s0=Math.max(0,st-lat), e0=Math.max(s0+0.06,en-lat);
+  if(snap&&nov){ const sn=onsetNear(s0,0.30); if(Math.abs(sn-s0)<0.30){ e0+=(sn-s0); s0=sn; } }
+  const i=capQ[capI];
+  words[i].start=+s0.toFixed(3); words[i].end=+e0.toFixed(3);
+  words[i].duration_s=+(e0-s0).toFixed(3); words[i].source='human_capture'; words[i].judge_v0=null;
+  capI++; autosave();
+  if(capI>=capQ.length){
+    capturing=false; armSig=''; $('#capture').classList.remove('on');
+    if(chunkI>=0 && chunks[chunkI]) chunks[chunkI].done=true;
+    status(`all ${capQ.length} timed — reselect to redo, or pick the next part`);
+  } else status(`"${words[i].text}" set → hold J for "${words[capQ[capI]].text}"  (${capI}/${capQ.length})`);
+  renderWords(); renderChunks(); draw();
+}
+function shiftSelection(dt){
+  if(!selIdx.length)return;
+  snapshot(); lastNowChip=-1;
+  selIdx.forEach(i=>{ words[i].start=+(words[i].start+dt).toFixed(3);
+                      words[i].end=+(words[i].end+dt).toFixed(3); });
+  words.forEach(w=>{ if(w.start<0){w.end-=w.start;w.start=0} });
+  selA=Math.min(...selIdx.map(i=>words[i].start));
+  selB=Math.max(...selIdx.map(i=>words[i].end));
+  autosave(); syncSel();
+  status(`${selIdx.length} word${selIdx.length>1?'s':''} moved ${dt>0?'+':''}${Math.round(dt*1000)}ms  (← → to nudge, shift = 200ms)`);
 }
 function snapshot(){undoStack.push(JSON.stringify(words.map(w=>({s:w.start,e:w.end,t:w.text}))));if(undoStack.length>60)undoStack.shift()}
 $('#undo').onclick=()=>{const s=undoStack.pop();if(!s)return;const d=JSON.parse(s);
@@ -481,6 +704,17 @@ $('#nudgeR2').onclick=()=>selIdx.length&&shift(selIdx,0.1);
 $('#ripple').onclick=e=>{rippleOn=!rippleOn;e.target.textContent='ripple: '+(rippleOn?'on':'off');e.target.classList.toggle('on',rippleOn)};
 $('#clearSel').onclick=()=>{selIdx=[];selA=selB=null;syncSel()};
 $('#addWord').onclick=()=>addWordAt(now());
+$('#fixMode').onclick=()=>{ fixOn=!fixOn; $('#fixMode').classList.toggle('on',fixOn);
+  $('#chunks').classList.toggle('on',fixOn);
+  if(fixOn){ buildChunks(); status(`fix mode: ${chunks.length} chunks need attention — click one, then hold J through each word`); }
+  else { chunkI=-1; capturing=false; $('#capture').classList.remove('on'); renderChunks(); status('fix mode off'); } };
+$('#loopBtn').onclick=e=>{ loopOn=!loopOn; e.target.textContent='loop: '+(loopOn?'on':'off'); draw(); };
+$('#leadLess').onclick=()=>{PREROLL_S=Math.max(0,PREROLL_S-0.5);status(`lead-in ${PREROLL_S.toFixed(1)}s`);draw()};
+$('#leadMore').onclick=()=>{PREROLL_S=Math.min(6,PREROLL_S+0.5);status(`lead-in ${PREROLL_S.toFixed(1)}s`);draw()};
+$('#nextChunk').onclick=()=>{ const n=chunks.findIndex((c,i)=>i>chunkI&&!c.done); enterChunk(n>=0?n:chunks.findIndex(c=>!c.done)); };
+$('#prevChunk').onclick=()=>enterChunk(Math.max(0,chunkI-1));
+$('#rate75').onclick=()=>{ rate=0.75; $('#rate').value=0.75; $('#rateOut').textContent='0.75×'; if(playing){stop();start()} };
+$('#rate100').onclick=()=>{ rate=1; $('#rate').value=1; $('#rateOut').textContent='1×'; if(playing){stop();start()} };
 $('#delWord').onclick=deleteSelected;
 function nextFlag(){
   const stops=[...flagged().map(i=>({t:words[i].start,i})),
@@ -531,23 +765,34 @@ addEventListener('keydown',e=>{
   if(e.key==='+'||e.key==='='){e.preventDefault();zoomAt(now(),0.6);return}
   if(e.key==='-'||e.key==='_'){e.preventDefault();zoomAt(now(),1.7);return}
   if(e.key==='0'){e.preventDefault();view={a:0,b:0};draw();return}
-  if(e.key==='ArrowLeft'){e.preventDefault();seek(now()-(e.shiftKey?5:1));return}
-  if(e.key==='ArrowRight'){e.preventDefault();seek(now()+(e.shiftKey?5:1));return}
-  if(e.code!=='Space')return; e.preventDefault();
-  if(!capturing){playing?stop():start();return}
-  if(capDown!=null)return; capDown=now();
+  if(e.key==='ArrowLeft'||e.key==='ArrowRight'){
+    e.preventDefault();
+    const dir=e.key==='ArrowLeft'?-1:1;
+    if(selIdx.length){                       // move the selected words as a block
+      const step=e.shiftKey?0.20:(e.altKey?0.005:0.02);
+      shiftSelection(dir*step);
+    } else seek(now()+dir*(e.shiftKey?5:1));
+    return;
+  }
+  if(e.key==='x'||e.key==='X'){e.preventDefault();$('#fixMode').click();return}
+  if(e.key==='j'||e.key==='J'){ e.preventDefault();
+    if(!capturing||capI>=capQ.length){ status('select some words first — then hold J for each'); return }
+    if(capDown==null){ capDown=now(); draw(); }
+    return; }
+  if(e.code!=='Space'){return}
+  e.preventDefault();
+  if(playing){ stop(); return; }
+  const L=loopBounds();
+  // loop active -> ALWAYS start at the head of the loop, never mid-way
+  if(loopOn && L) seek(L[0]);
+  start();
+  return;
 });
 addEventListener('keyup',e=>{
-  if(e.code!=='Space'||!capturing||capDown==null)return; e.preventDefault();
-  const lat=+$('#lat').value/1000, snap=$('#snapOn').checked;
-  let s=Math.max(0,capDown-lat), en=Math.max(s+0.06,now()-lat);
-  if(snap&&nov){const sn=onsetNear(s); if(Math.abs(sn-s)<0.3)  { en+= (sn-s); s=sn; }}
-  const i=capQ[capI]; words[i].start=+s.toFixed(3); words[i].end=+en.toFixed(3);
-  words[i].duration_s=+(en-s).toFixed(3); words[i].source='human_capture'; words[i].judge_v0=null;
-  capDown=null; capI++; autosave();
-  if(capI>=capQ.length){capturing=false;$('#capture').classList.remove('on');status(`captured ${capQ.length} words`);stop()}
-  else status(`captured "${words[i].text}" → next: "${words[capQ[capI]].text}"`);
-  renderWords(); draw();
+  if((e.key==='j'||e.key==='J') && capturing && capDown!=null){
+    e.preventDefault(); const st=capDown; capDown=null; commitCapture(st, now()); return;
+  }
+  // J is the only capture key; space is transport
 });
 
 function ts(t){const ms=Math.round(t*1000),h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),s=Math.floor(ms%60000/1000),x=ms%1000;
