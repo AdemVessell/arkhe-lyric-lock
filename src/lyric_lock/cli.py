@@ -24,6 +24,27 @@ def _cmd_list(_: argparse.Namespace) -> int:
     return 0
 
 
+def _load_sections(path: Path | None) -> list[dict] | None:
+    """Read + validate a --sections spec. Bad windows are worse than none."""
+    if not path:
+        return None
+    secs = json.loads(Path(path).expanduser().resolve().read_text(encoding="utf-8"))
+    if not isinstance(secs, list) or not secs:
+        raise SystemExit("--sections: expected a non-empty JSON list")
+    for i, s in enumerate(secs):
+        missing = {"t0", "t1", "lines"} - set(s)
+        if missing:
+            raise SystemExit(f"--sections[{i}]: missing {sorted(missing)}")
+        if float(s["t1"]) <= float(s["t0"]):
+            raise SystemExit(f"--sections[{i}]: t1 must be > t0")
+        if not s["lines"]:
+            raise SystemExit(f"--sections[{i}]: empty lines")
+    for i, (a, b) in enumerate(zip(secs, secs[1:])):
+        if float(b["t0"]) < float(a["t0"]):
+            raise SystemExit(f"--sections[{i+1}]: windows must be in time order")
+    return secs
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     fixture_id = None
     if args.fixture:
@@ -91,6 +112,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         display_repair=dr_flag,
         display_pack=not bool(getattr(args, "no_display_pack", False)),
         drop_parenthetical=not bool(getattr(args, "keep_parenthetical", False)),
+        sections=_load_sections(getattr(args, "sections", None)),
+        collapse_check=not bool(getattr(args, "no_collapse_check", False)),
+        collapse_fail=not bool(getattr(args, "collapse_warn", False)),
     )
 
     meta = json.loads((run_dir / "run_meta.json").read_text(encoding="utf-8"))
@@ -340,6 +364,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--gate-warn",
         action="store_true",
         help="Sheet gate warns on MISSING_LYRICS instead of aborting run",
+    )
+    pr.add_argument(
+        "--sections",
+        type=Path,
+        help=(
+            "JSON: [{name,t0,t1,lines:[...]}] — align each section in its own "
+            "audio window. Bounds a lost alignment to one section instead of "
+            "smearing to the end of the track."
+        ),
+    )
+    pr.add_argument(
+        "--no-collapse-check",
+        action="store_true",
+        help="Skip the spine-collapse check that runs before the sheet gate",
+    )
+    pr.add_argument(
+        "--collapse-warn",
+        action="store_true",
+        help="Spine collapse warns instead of aborting the run",
     )
     pr.add_argument(
         "--score",

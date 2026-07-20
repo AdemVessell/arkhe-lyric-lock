@@ -419,10 +419,20 @@ def run_sheet_gate(
     whisper_model_name: str = "medium",
     use_whisper: bool = True,
     device: str = "cpu",
+    sections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Full gate report: segments, MIX splices, merged segments, suspects.
     Pass mix_path for engineered-splice cuts (required for mashup DP safety).
+
+    sections: the per-section windows the spine was aligned in, when sectioned.
+      REQUIRED for a sound verdict on a sectioned run. The gate reasons from
+      star spans, and stars only exist inside an aligned window — so audio
+      BETWEEN sections produces no star and is invisible to the gate. That
+      silence reads as "nothing to flag" when it is really "never examined".
+      Given sections, the inter-section gaps are evaluated on the same path as
+      stars (energy floor, then ASR, then classification), so uncovered sung
+      audio still fails loudly.
     """
     y, sr = _load_mono16k(Path(vocal_path))
     rms = rms_track(y)
@@ -448,12 +458,35 @@ def run_sheet_gate(
 
         wmodel = whisper.load_model(whisper_model_name)
 
+    # Audio no section claimed. Evaluated exactly like a star span so an
+    # unexamined window cannot masquerade as a clean one.
+    dur_s = len(y) / float(sr)
+    section_gaps: list[dict[str, float]] = []
+    if sections:
+        wins = sorted(
+            (max(0.0, float(s["t0"])), min(dur_s, float(s["t1"]))) for s in sections
+        )
+        cursor = 0.0
+        for t0, t1 in wins:
+            if t0 - cursor > MIN_STAR_S:
+                section_gaps.append({"start": round(cursor, 3), "end": round(t0, 3)})
+            cursor = max(cursor, t1)
+        if dur_s - cursor > MIN_STAR_S:
+            section_gaps.append({"start": round(cursor, 3), "end": round(dur_s, 3)})
+
     suspects: list[dict[str, Any]] = []
     for sp in star_spans:
         s, e = float(sp["start"]), float(sp["end"])
         v = evaluate_star_span(y, sr, rms, s, e, lines_n, wmodel)
         if v:
             suspects.append(v)
+    for sp in section_gaps:
+        s, e = float(sp["start"]), float(sp["end"])
+        v = evaluate_star_span(y, sr, rms, s, e, lines_n, wmodel)
+        if v:
+            v["origin"] = "section_gap"
+            suspects.append(v)
+    suspects.sort(key=lambda v: v["span"][0])
 
     fail_loud = [v for v in suspects if v["action"] == "FAIL_LOUD"]
     abstain = [v for v in suspects if v["action"] == "ABSTAIN"]
@@ -464,6 +497,8 @@ def run_sheet_gate(
         "vocal_path": str(Path(vocal_path).resolve()),
         "mix_path": str(Path(mix_path).resolve()) if mix_path else None,
         "engineered_splices": splices,
+        "section_gaps_examined": section_gaps,
+        "sectioned": bool(sections),
         "segments_silence_only": [list(s) for s in silence_segs],
         "segments_merged_for_fusion": [list(s) for s in merged],
         "segment_note": (

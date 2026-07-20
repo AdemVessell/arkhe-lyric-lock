@@ -143,6 +143,8 @@ def ctc_align_words(
     # Slice-tail: refuse to pack leftover lyric past audio end
     tail_margin_s: float = 0.35,
     min_word_frames: int = 1,
+    # Per-section windows: bound the blast radius of a lost alignment
+    sections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     CTC forced alignment (MMS_FA) of known lyrics onto audio (prefer vocal stem @ 16k).
@@ -151,6 +153,23 @@ def ctc_align_words(
       Pass RETIRED_DISPLAY_LEAD_S (−0.239) only for A/B autopsy, not product.
     star: insert '*' between lyric lines (default True). Active star spans
       are returned as honest-abstention instruments for fusion windows.
+    sections: optional list of {"name", "t0", "t1", "lines": [str, ...]}. Each
+      section aligns inside its own audio window instead of one monotonic pass
+      over the whole track.
+
+      Why this exists: forced alignment must consume every token in order and
+      has no way to resync. One stretch of bad acoustic evidence — a section
+      the sheet does not cover, a dense passage, a long vamp — makes the
+      Viterbi path cram every remaining token into sub-second boxes, and the
+      damage runs to the end of the song. Observed on "Straight Ghostin"
+      (2026-07-19): the verse tail broke at ~52s and 130 words smeared across
+      the remaining 120s, including two words holding 40s between them.
+
+      Sections bound that: a section can only wreck itself. Windows should come
+      from an ASR structure pass, then be checked. Star tokens still wrap every
+      line, so slack at the window edges is absorbed rather than forced.
+
+      Default None = single whole-song pass (unchanged behaviour).
     """
     import torch
     import torchaudio
@@ -176,82 +195,138 @@ def ctc_align_words(
     assert sr == 16000
     dur_s = float(waveform.size(1) / sr)
 
-    # Build target sequence: optional leading/trailing stars + per-line words
-    # Each entry: (display_text or "*", norm_token, line_id or None)
-    entries: list[tuple[str, str, str | None]] = []
-    dropped: list[str] = []
-
-    if star:
-        entries.append(("*", "*", None))
-        for li, toks in enumerate(line_tokens):
-            lid = f"L{li}"
-            for w in toks:
-                n = _normalize_token(w, dictionary)
-                if n:
-                    entries.append((w, n, lid))
-                else:
-                    dropped.append(w)
-            entries.append(("*", "*", None))
+    # Split the work into aligned segments. No sections = one whole-song
+    # segment, which reproduces the single-pass path exactly.
+    if sections:
+        segments = []
+        li = 0
+        for sec in sections:
+            sec_lines = lyrics_line_tokens(
+                "\n".join(sec["lines"]), drop_parenthetical=drop_parenthetical
+            )
+            if not sec_lines:
+                continue
+            segments.append(
+                {
+                    "name": str(sec.get("name") or f"S{len(segments)}"),
+                    "t0": max(0.0, float(sec["t0"])),
+                    "t1": min(dur_s, float(sec["t1"])),
+                    "line_tokens": sec_lines,
+                    "line_base": li,
+                }
+            )
+            li += len(sec_lines)
+        if not segments:
+            raise ValueError("sections produced no alignable lines")
     else:
-        for li, toks in enumerate(line_tokens):
-            lid = f"L{li}"
-            for w in toks:
-                n = _normalize_token(w, dictionary)
-                if n:
-                    entries.append((w, n, lid))
-                else:
-                    dropped.append(w)
+        segments = [
+            {
+                "name": None,
+                "t0": 0.0,
+                "t1": dur_s,
+                "line_tokens": line_tokens,
+                "line_base": 0,
+            }
+        ]
 
-    keep = [(rw, nw, lid) for rw, nw, lid in entries if nw]
-    if not any(rw != "*" for rw, _, _ in keep):
-        raise ValueError("no alignable words after MMS_FA dict filter")
-
-    with torch.inference_mode():
-        emission, _ = model(waveform.to(next(model.parameters()).device))
-
-    targets = torch.tensor(
-        [[dictionary[c] for _, nw, _ in keep for c in nw]],
-        dtype=torch.int32,
-        device=emission.device,
-    )
-    aligned, scores = torchaudio.functional.forced_align(
-        emission, targets, blank=0
-    )
-    spans = torchaudio.functional.merge_tokens(aligned[0], scores[0])
-
-    ratio = waveform.size(1) / emission.size(1) / float(sr)  # sec per frame
+    dropped: list[str] = []
     words_out: list[dict[str, Any]] = []
     star_spans: list[dict[str, float]] = []
-    si = 0
+    section_report: list[dict[str, Any]] = []
     wi = 0
-    for rw, nw, lid in keep:
-        n = len(nw)
-        group = spans[si : si + n]
-        si += n
-        if not group:
-            continue
-        start = float(group[0].start) * ratio
-        end = float(group[-1].end) * ratio
-        conf = float(np.mean([float(s.score) for s in group]))
-        if rw == "*":
-            if end - start > 0.10:
-                star_spans.append(
-                    {"start": round(start, 4), "end": round(end, 4)}
-                )
-            continue
-        words_out.append(
-            {
-                "id": f"W{wi}",
-                "start": start,
-                "end": end,
-                "text": rw,
-                "confidence": round(conf, 4),
-                "source": "ctc_mms_fa_star" if star else "ctc_mms_fa",
-                "duration_s": round(end - start, 4),
-                "line_id": lid or "L0",
-            }
+    n_alignable = 0
+
+    for seg in segments:
+        # Build target sequence: optional leading/trailing stars + per-line words
+        # Each entry: (display_text or "*", norm_token, line_id or None)
+        entries: list[tuple[str, str, str | None]] = []
+        for li, toks in enumerate(seg["line_tokens"]):
+            lid = f"L{seg['line_base'] + li}"
+            if star and not entries:
+                entries.append(("*", "*", None))
+            for w in toks:
+                n = _normalize_token(w, dictionary)
+                if n:
+                    entries.append((w, n, lid))
+                else:
+                    dropped.append(w)
+            if star:
+                entries.append(("*", "*", None))
+
+        keep = [(rw, nw, lid) for rw, nw, lid in entries if nw]
+        if not any(rw != "*" for rw, _, _ in keep):
+            raise ValueError("no alignable words after MMS_FA dict filter")
+        n_alignable += sum(1 for rw, _, _ in keep if rw != "*")
+
+        wf = waveform[:, int(seg["t0"] * sr) : int(seg["t1"] * sr)]
+        if wf.size(1) < sr // 10:
+            raise ValueError(
+                f"section {seg['name']!r} window {seg['t0']}-{seg['t1']}s "
+                "is too short to align"
+            )
+
+        with torch.inference_mode():
+            emission, _ = model(wf.to(next(model.parameters()).device))
+
+        targets = torch.tensor(
+            [[dictionary[c] for _, nw, _ in keep for c in nw]],
+            dtype=torch.int32,
+            device=emission.device,
         )
-        wi += 1
+        aligned, scores = torchaudio.functional.forced_align(
+            emission, targets, blank=0
+        )
+        spans = torchaudio.functional.merge_tokens(aligned[0], scores[0])
+
+        ratio = wf.size(1) / emission.size(1) / float(sr)  # sec per frame
+        offset = seg["t0"]
+        si = 0
+        seg_confs: list[float] = []
+        for rw, nw, lid in keep:
+            n = len(nw)
+            group = spans[si : si + n]
+            si += n
+            if not group:
+                continue
+            start = float(group[0].start) * ratio + offset
+            end = float(group[-1].end) * ratio + offset
+            conf = float(np.mean([float(s.score) for s in group]))
+            if rw == "*":
+                if end - start > 0.10:
+                    star_spans.append(
+                        {"start": round(start, 4), "end": round(end, 4)}
+                    )
+                continue
+            seg_confs.append(conf)
+            words_out.append(
+                {
+                    "id": f"W{wi}",
+                    "start": start,
+                    "end": end,
+                    "text": rw,
+                    "confidence": round(conf, 4),
+                    "source": (
+                        ("ctc_mms_fa_star" if star else "ctc_mms_fa")
+                        + ("_seg" if sections else "")
+                    ),
+                    "duration_s": round(end - start, 4),
+                    "line_id": lid or "L0",
+                    **({"section": seg["name"]} if seg["name"] else {}),
+                }
+            )
+            wi += 1
+        if seg["name"]:
+            section_report.append(
+                {
+                    "name": seg["name"],
+                    "t0": round(seg["t0"], 3),
+                    "t1": round(seg["t1"], 3),
+                    "n_words": len(seg_confs),
+                    "mean_confidence": (
+                        round(float(np.mean(seg_confs)), 4) if seg_confs else None
+                    ),
+                }
+            )
 
     # --- slice-tail guard ---
     hard_end = max(0.0, dur_s - tail_margin_s)
@@ -291,7 +366,11 @@ def ctc_align_words(
 
     lines = _rebuild_lines(words_out)
     text = " ".join(w["text"] for w in words_out)
-    method = "ctc_forced_align" + ("+star_per_line" if star else "")
+    method = (
+        "ctc_forced_align"
+        + ("+star_per_line" if star else "")
+        + ("+per_section_windows" if sections else "")
+    )
 
     return {
         "words": words_out,
@@ -311,7 +390,9 @@ def ctc_align_words(
             "drop_parenthetical": drop_parenthetical,
             "tail_margin_s": tail_margin_s,
             "n_raw_lyric_tokens": sum(len(t) for t in line_tokens),
-            "n_alignable": sum(1 for rw, _, _ in keep if rw != "*"),
+            "n_alignable": n_alignable,
+            "sectioned": bool(sections),
+            "sections": section_report,
             "n_dropped_unalignable": len(dropped),
             "n_tail_dropped": tail_dropped,
             "dropped_unalignable_sample": dropped[:12],

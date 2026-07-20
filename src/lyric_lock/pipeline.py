@@ -63,6 +63,11 @@ def run_pipeline(
     display_repair: bool | None = None,
     display_pack: bool = True,
     drop_parenthetical: bool = True,
+    # Per-section CTC windows: [{"name","t0","t1","lines":[...]}, ...]
+    sections: list[dict[str, Any]] | None = None,
+    # Spine-collapse check runs before the gate (see spine_collapse.py)
+    collapse_check: bool = True,
+    collapse_fail: bool = True,
 ) -> Path:
     """
     Mode B: lyrics_path is None → free ASR text + times.
@@ -147,7 +152,17 @@ def run_pipeline(
                 display_lead_s=lead,
                 drop_parenthetical=drop_parenthetical,
                 star=bool(ctc_star),
+                sections=sections,
             )
+            if sections:
+                for s in (fa["engine"].get("sections") or []):
+                    mc = s.get("mean_confidence")
+                    conf_s = f"{mc:6.2f}" if mc is not None else "   n/a"
+                    print(
+                        f"    section {s['name']:12s} "
+                        f"{s['t0']:7.2f}-{s['t1']:7.2f}  "
+                        f"{s['n_words']:3d} words  meanconf {conf_s}"
+                    )
             words = fa["words"]
             lines = fa["lines"]
             full_text = fa.get("text") or " ".join(w["text"] for w in words)
@@ -332,6 +347,37 @@ def run_pipeline(
 
     # Path B sheet-gate preflight: suspects + splice/star segments before fusion.
     # Reuses this run's star spans; MIX (original audio) drives splice cuts.
+    # --- spine-collapse check, BEFORE the gate ---
+    # The gate infers sheet coverage from where the spine put words. A collapsed
+    # spine smears rather than leaving holes, so smear reads as coverage and the
+    # gate clears audio it should have failed loudly on. Check the spine first.
+    collapse_report: dict[str, Any] | None = None
+    if collapse_check and mode == "A" and words:
+        from .spine_collapse import detect as detect_collapse
+
+        collapse_report = detect_collapse(words)
+        if collapse_report["collapsed"]:
+            kinds = sorted({f["kind"] for f in collapse_report["findings"]})
+            print(
+                f"  SPINE COLLAPSE detected ({', '.join(kinds)}) — "
+                f"{len(collapse_report['findings'])} findings:"
+            )
+            for f in collapse_report["findings"][:6]:
+                print(
+                    f"    [{f['kind']}] {f['span'][0]:.2f}-{f['span'][1]:.2f}s "
+                    f"{f['text'][:40]!r}: {f['detail']}"
+                )
+            msg = (
+                "spine collapsed: forced alignment lost sync and smeared words "
+                "across the track. Downstream gate/judge results are not "
+                "trustworthy on this spine. Re-run with --sections to bound "
+                "each section to its own audio window, or --no-collapse-check "
+                "to proceed anyway."
+            )
+            if collapse_fail:
+                raise RuntimeError(msg)
+            print(f"  WARNING: {msg}")
+
     gate_meta: dict[str, Any] | None = None
     gate_segments: list[tuple[float, float]] | None = None
     if (
@@ -351,6 +397,9 @@ def run_pipeline(
             star_spans=star_spans,
             whisper_model_name=whisper_fuse_model,
             device=device or "cpu",
+            # Without this the gate cannot see audio between sections and
+            # would return pass=true on windows it never examined.
+            sections=sections,
         )
         write_suspect_spans(gate_report, run_dir / "suspect_spans.json")
         gate_segments = [
@@ -656,6 +705,7 @@ def run_pipeline(
             )
             + ("; display-repair v1 on" if display_repair else "; display-repair off")
         ),
+        "spine_collapse": collapse_report,
     }
     (run_dir / "run_meta.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
