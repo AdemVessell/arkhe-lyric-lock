@@ -62,6 +62,12 @@ footer{padding:56px 0 90px;color:var(--tx3);font-size:14px;border-top:1px solid 
     <a class="btn pri" href="https://github.com/AdemVessell/arkhe-lyric-lock">Code on GitHub</a>
     <a class="btn" href="bench/">Open the repair bench</a>
   </div>
+  <p style="margin-top:20px"><strong>Code and model licensing:</strong> MIT covers our application code.
+  The default aligner downloads Meta&rsquo;s
+  <a href="https://docs.pytorch.org/audio/stable/generated/torchaudio.pipelines.MMS_FA.html">MMS_FA weights</a>,
+  licensed under <a href="https://creativecommons.org/licenses/by-nc/4.0/legalcode.en">CC-BY-NC 4.0 (non-commercial)</a>;
+  no MMS weights are bundled here. <strong>The default workflow is not cleared for commercial use.</strong>
+  See the <a href="https://github.com/AdemVessell/arkhe-lyric-lock/blob/main/NOTICE.md">model licence details and replacement status</a>.</p>
   <figure style="margin:44px 0 0">
     <video controls preload="none" poster="showcase_poster.jpg" playsinline
       style="width:100%;border-radius:12px;border:1px solid var(--line);display:block;background:#000">
@@ -177,8 +183,11 @@ footer{padding:56px 0 90px;color:var(--tx3);font-size:14px;border-top:1px solid 
     <li><b>Backing vocals and parentheticals are skipped by design.</b></li>
     <li><b>Validated by ear on a handful of songs</b>, not on a public benchmark. Treat the numbers as
     measured-here, not as a leaderboard claim.</li>
-    <li><b>The default aligner weights are CC-BY-NC</b> (non-commercial). A permissively licensed aligner
-    can be swapped in — see NOTICE.md.</li>
+    <li><b>The default MMS_FA weights are <a href="https://creativecommons.org/licenses/by-nc/4.0/legalcode.en">CC-BY-NC 4.0</a>
+    (non-commercial).</b> Commercial use requires separate permission for MMS or a replacement with appropriate
+    commercial-use rights. A replacement CTC backend has not been implemented or validated here;
+    alignment and sheet checks need engineering and validation. See
+    <a href="https://github.com/AdemVessell/arkhe-lyric-lock/blob/main/NOTICE.md">NOTICE</a> for details.</li>
   </ul>
 </section>
 

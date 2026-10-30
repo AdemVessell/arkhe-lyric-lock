@@ -60,6 +60,12 @@ This is the part that isn't standard:
 
 ## Install
 
+> **Code and model licensing:** Our application code is [MIT-licensed](LICENSE).
+> The default backend downloads and uses Meta's [MMS_FA weights](https://docs.pytorch.org/audio/stable/generated/torchaudio.pipelines.MMS_FA.html),
+> separately licensed under [CC-BY-NC 4.0 (non-commercial)](https://creativecommons.org/licenses/by-nc/4.0/legalcode.en).
+> No MMS weights are included in this repository. **The default MMS-backed workflow
+> is not cleared for commercial use.** See [NOTICE.md](NOTICE.md) before running it.
+
 ```bash
 python3 -m pip install -r requirements.txt      # torch, torchaudio, openai-whisper
 # demucs is best kept in its own venv:
@@ -120,9 +126,23 @@ produced the working stack is in `notes/eval/SPINE_BAKEOFF.md`.
 
 ## Licensing
 
-Our code is MIT (`LICENSE`). The models are not ours and carry their own terms —
-notably **MMS_FA aligner weights are CC-BY-NC (non-commercial)**. See `NOTICE.md`
-before any commercial use; a permissively licensed aligner can be swapped in.
+Our application code is [MIT-licensed](LICENSE). Third-party code and model
+weights retain their own licences; MIT does not grant commercial-use permission
+for the default [MMS_FA model](https://docs.pytorch.org/audio/stable/generated/torchaudio.pipelines.MMS_FA.html).
+Its weights are licensed under [CC-BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/legalcode.en)
+and downloaded separately, not bundled in this repository.
+
+CC-BY-NC permits non-commercial sharing under its terms; it is not a
+personal-use-only licence. Downloading the weights separately or running them
+locally does not grant commercial-use permission. Commercial use of the default
+workflow requires separate permission for MMS or a replacement with appropriate
+commercial-use rights.
+
+**A replacement CTC backend permitting commercial use has not been implemented
+or validated here.** The current CTC backend explicitly selects MMS_FA; replacing
+it requires engineering and validation of both alignment and sheet checks, not
+just a configuration change. See [NOTICE.md](NOTICE.md) for attribution, upstream
+licence links, and the other component licences.
 
 ## Credit
 
